@@ -9,17 +9,43 @@ app.use(express.json());
 
 // Configuration
 const FREEMIUS_API_URL = 'https://api.freemius.com/v1/developers';
-const FREEMIUS_DEVELOPER_ID = process.env.FREEMIUS_DEVELOPER_ID;
-const FREEMIUS_PUBLIC_KEY = process.env.FREEMIUS_PUBLIC_KEY;
-const FREEMIUS_SECRET_KEY = process.env.FREEMIUS_SECRET_KEY;
-const FREEMIUS_PLUGIN_ID = process.env.FREEMIUS_PLUGIN_ID;
+const FREEMIUS_DEVELOPER_ID = 21493; // בדרך כלל זה אותו מספר כמו Plugin ID, אם לא מוצא אותו - נסה 21493 או חפש ב-Settings > Integration
+const FREEMIUS_PUBLIC_KEY = 'pk_c1f4731e093f2279f624161d5ee8b';
+const FREEMIUS_SECRET_KEY = 'sk_0MMUBME@.WS)<IG1GLBsW(~w<0b)X';
+const FREEMIUS_PLUGIN_ID = 21493; // Plugin ID מ-URL: /plugins/21493/
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MONTHLY_CHAR_LIMIT = 200000; // 200K characters per month
+
+// Development/Test Mode - מאפשר לנסות בלי Freemius (השתמש ב-"TEST" כ-license_key)
+const TEST_MODE = process.env.TEST_MODE === 'true' || process.env.NODE_ENV === 'development';
+const TEST_LICENSE_KEY = 'TEST'; // במקרה של test mode, השתמש ב-"TEST" כ-license_key
 
 // Note: Audio files are sent directly to WordPress, no storage needed on this server
 
 // In-memory database for metering (in production, use Redis or PostgreSQL)
 const usageDB = new Map(); // license_key -> { month: '2025-01', chars_used: 0, generate_count: 0, wp_user_ids: Set() }
+
+/**
+ * Get product info from Freemius (helper function to find Developer ID)
+ * This uses the products endpoint with Bearer token
+ */
+async function getFreemiusProductInfo(productId, bearerToken) {
+    try {
+        const response = await axios.get(
+            `https://api.freemius.com/v1/products/${productId}.json`,
+            {
+                headers: {
+                    'Accept': 'application/json',
+                    'Authorization': `Bearer ${bearerToken}`
+                }
+            }
+        );
+        return response.data;
+    } catch (error) {
+        console.error('Freemius product info error:', error.response?.data || error.message);
+        return null;
+    }
+}
 
 /**
  * Validate license with Freemius
@@ -185,14 +211,25 @@ app.post('/generate', async (req, res) => {
         
         const textLength = text.length;
         
-        // Step 1: Validate license with Freemius
+        // Step 1: Validate license with Freemius (או מצב בדיקה)
         console.log(`Validating license: ${license_key.substring(0, 8)}...`);
-        const validation = await validateFreemiusLicense(license_key);
         
-        if (!validation.valid) {
-            return res.status(403).json({
-                error: validation.error || 'Invalid or expired license'
-            });
+        // מצב בדיקה - דלג על בדיקת Freemius אם זה TEST_MODE ו-license_key הוא "TEST"
+        let validation;
+        if (TEST_MODE && license_key === TEST_LICENSE_KEY) {
+            console.log('⚠️  TEST MODE: Skipping Freemius validation');
+            validation = {
+                valid: true,
+                license: { is_active: true, test_mode: true }
+            };
+        } else {
+            validation = await validateFreemiusLicense(license_key);
+            
+            if (!validation.valid) {
+                return res.status(403).json({
+                    error: validation.error || 'Invalid or expired license'
+                });
+            }
         }
         
         // Step 2: Check metering (monthly character limit)
@@ -252,7 +289,10 @@ app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
-        note: 'Audio files are stored directly in WordPress media library'
+        test_mode: TEST_MODE,
+        note: TEST_MODE ? 
+            'Audio files are stored directly in WordPress media library. TEST MODE ENABLED - use "TEST" as license_key for testing' :
+            'Audio files are stored directly in WordPress media library'
     });
 });
 
@@ -313,13 +353,21 @@ app.post('/usage', async (req, res) => {
             return res.status(400).json({ error: 'Missing license_key' });
         }
         
-        // Validate license
-        const validation = await validateFreemiusLicense(license_key);
-        
-        if (!validation.valid) {
-            return res.status(403).json({
-                error: 'Invalid or expired license'
-            });
+        // Validate license (או מצב בדיקה)
+        let validation;
+        if (TEST_MODE && license_key === TEST_LICENSE_KEY) {
+            validation = {
+                valid: true,
+                license: { is_active: true, test_mode: true }
+            };
+        } else {
+            validation = await validateFreemiusLicense(license_key);
+            
+            if (!validation.valid) {
+                return res.status(403).json({
+                    error: 'Invalid or expired license'
+                });
+            }
         }
         
         // Get usage

@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
 define('AUDIO_PRESS_AI_VERSION', '1.0.0');
 define('AUDIO_PRESS_AI_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('AUDIO_PRESS_AI_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('AUDIO_PRESS_AI_API_URL', 'https://api.audio-press.com'); // Change to your server URL
+define('AUDIO_PRESS_AI_API_URL', 'https://chatix.co.il'); // Change to your server URL
 
 // Freemius SDK integration
 if (!function_exists('apai_fs')) {
@@ -29,37 +29,54 @@ if (!function_exists('apai_fs')) {
         global $apai_fs;
 
         if (!isset($apai_fs)) {
-            // Include Freemius SDK.
-            require_once dirname(__FILE__) . '/freemius/start.php';
+            // Check if Freemius SDK exists before including
+            $freemius_file = dirname(__FILE__) . '/freemius/start.php';
+            
+            if (file_exists($freemius_file)) {
+                // Include Freemius SDK.
+                require_once $freemius_file;
 
-            $apai_fs = fs_dynamic_init(array(
-                'id'                  => 'YOUR_PLUGIN_ID', // Replace with your Freemius plugin ID
-                'slug'                => 'audio-press-ai',
-                'type'                => 'plugin',
-                'public_key'          => 'YOUR_PUBLIC_KEY', // Replace with your Freemius public key
-                'is_premium'          => true,
-                'premium_suffix'      => 'Pro',
-                'has_premium_version' => true,
-                'has_addons'          => false,
-                'has_paid_plans'      => true,
-                'trial'               => array(
-                    'days'               => 7,
-                    'is_require_payment' => false,
-                ),
-                'menu'                => array(
-                    'slug'           => 'audio-press-ai',
-                    'first-path'     => 'admin.php?page=audio-press-ai',
-                    'account'        => false,
-                    'contact'        => false,
-                    'support'        => false,
-                ),
-            ));
+                $apai_fs = fs_dynamic_init(array(
+                    'id'                  => '21493', // Plugin ID מ-Freemius
+                    'slug'                => 'audio-press-ai',
+                    'type'                => 'plugin',
+                    'public_key'          => 'pk_c1f4731e093f2279f624161d5ee8b', // Public Key מ-Freemius
+                    'is_premium'          => true,
+                    'premium_suffix'      => 'Pro',
+                    'has_premium_version' => true,
+                    'has_addons'          => false,
+                    'has_paid_plans'      => true,
+                    'trial'               => array(
+                        'days'               => 7,
+                        'is_require_payment' => false,
+                    ),
+                    'menu'                => array(
+                        'slug'           => 'audio-press-ai',
+                        'first-path'     => 'admin.php?page=audio-press-ai',
+                        'account'        => false,
+                        'contact'        => false,
+                        'support'        => false,
+                    ),
+                ));
+            } else {
+                // Freemius SDK not found - return dummy object to prevent errors
+                $apai_fs = new stdClass();
+                $apai_fs->is_paying = false;
+                $apai_fs->_get_license = false;
+                
+                // Show admin notice if we're in admin
+                if (is_admin()) {
+                    add_action('admin_notices', function() {
+                        echo '<div class="notice notice-error"><p><strong>Audio-Press AI:</strong> Freemius SDK not found. Please download and install the Freemius SDK in the <code>freemius</code> directory. <a href="https://github.com/Freemius/wordpress-sdk" target="_blank">Download SDK</a></p></div>';
+                    });
+                }
+            }
         }
 
         return $apai_fs;
     }
 
-    // Init Freemius.
+    // Init Freemius (only if SDK exists).
     apai_fs();
     // Signal that SDK was initiated.
     do_action('apai_fs_loaded');

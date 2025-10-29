@@ -55,7 +55,15 @@ class Audio_Press_AI {
         }
         
         $fs = apai_fs();
-        $license = $fs->_get_license();
+        
+        // Check if _get_license is a method (callable) or property
+        if (is_callable(array($fs, '_get_license'))) {
+            $license = $fs->_get_license();
+        } elseif (isset($fs->_get_license)) {
+            $license = $fs->_get_license;
+        } else {
+            return false;
+        }
         
         if ($license && isset($license->secret_key)) {
             return $license->secret_key;
