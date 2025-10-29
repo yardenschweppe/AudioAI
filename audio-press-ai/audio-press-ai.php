@@ -22,6 +22,10 @@ define('AUDIO_PRESS_AI_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('AUDIO_PRESS_AI_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('AUDIO_PRESS_AI_API_URL', 'https://chatix.co.il'); // Change to your server URL
 
+// Development mode - set to true for testing without Pro license
+// Change to false for production
+define('AUDIO_PRESS_AI_DEV_MODE', true); // Set to false in production!
+
 // Freemius SDK integration
 if (!function_exists('apai_fs')) {
     // Create a helper function for easy access to the Freemius SDK instance.

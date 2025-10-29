@@ -38,6 +38,11 @@ class Audio_Press_AI {
      * Check if user has Pro license
      */
     private function is_pro_user() {
+        // In dev mode, always return true (allows testing without license)
+        if (defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true) {
+            return true;
+        }
+        
         if (!function_exists('apai_fs')) {
             return false;
         }
@@ -63,6 +68,11 @@ class Audio_Press_AI {
      * Get Freemius license key
      */
     private function get_license_key() {
+        // In dev mode, return "TEST" license key (works with server TEST_MODE)
+        if (defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true) {
+            return 'TEST';
+        }
+        
         if (!function_exists('apai_fs')) {
             return false;
         }
@@ -197,12 +207,17 @@ class Audio_Press_AI {
         $auto_embed = get_option('audio_press_ai_auto_embed', '1');
         $auto_generate = get_option('audio_press_ai_auto_generate', '0');
         $is_pro = $this->is_pro_user();
+        $dev_mode = defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true;
         
         ?>
         <div class="wrap">
             <h1><?php echo esc_html(get_admin_page_title()); ?></h1>
             
-            <?php if (!$is_pro): ?>
+            <?php if ($dev_mode): ?>
+                <div class="notice notice-info">
+                    <p><strong>⚠️ <?php _e('DEV MODE ACTIVE', 'audio-press-ai'); ?></strong> - <?php _e('Testing without Pro license. Set AUDIO_PRESS_AI_DEV_MODE to false for production.', 'audio-press-ai'); ?></p>
+                </div>
+            <?php elseif (!$is_pro): ?>
                 <div class="notice notice-warning">
                     <p><strong><?php _e('Upgrade to Pro', 'audio-press-ai'); ?></strong> - <?php _e('You need a Pro license to generate audio. Click "Upgrade to Pro" in the Freemius menu.', 'audio-press-ai'); ?></p>
                 </div>
@@ -331,9 +346,10 @@ class Audio_Press_AI {
         wp_nonce_field('audio_press_ai_meta_box', 'audio_press_ai_nonce');
         
         $is_pro = $this->is_pro_user();
+        $dev_mode = defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true;
         ?>
         <div id="audio-press-ai-container" data-post-id="<?php echo esc_attr($post_id); ?>">
-            <?php if (!$is_pro): ?>
+            <?php if (!$is_pro && !$dev_mode): ?>
                 <div style="padding: 10px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; margin-bottom: 10px;">
                     <p style="margin: 0; font-size: 12px;">
                         <strong><?php _e('Upgrade Required', 'audio-press-ai'); ?></strong><br>
@@ -344,6 +360,12 @@ class Audio_Press_AI {
                             <?php _e('Upgrade to Pro', 'audio-press-ai'); ?>
                         </a>
                     <?php endif; ?>
+                </div>
+            <?php elseif ($dev_mode): ?>
+                <div style="padding: 8px; background: #e7f3ff; border: 1px solid #0073aa; border-radius: 4px; margin-bottom: 10px;">
+                    <p style="margin: 0; font-size: 11px; color: #0073aa;">
+                        <strong>⚠️ <?php _e('DEV MODE', 'audio-press-ai'); ?></strong> - <?php _e('Testing without Pro license', 'audio-press-ai'); ?>
+                    </p>
                 </div>
             <?php endif; ?>
             
@@ -357,7 +379,7 @@ class Audio_Press_AI {
                         <button type="button" 
                                 class="button button-secondary" 
                                 id="audio-press-ai-regenerate"
-                                <?php if (!$is_pro) echo 'disabled'; ?>>
+                                <?php if (!$is_pro && !$dev_mode) echo 'disabled'; ?>>
                             <?php _e('Regenerate Audio', 'audio-press-ai'); ?>
                         </button>
                         <button type="button" 
@@ -372,7 +394,7 @@ class Audio_Press_AI {
                         class="button button-primary button-large" 
                         id="audio-press-ai-generate" 
                         style="width: 100%;"
-                        <?php if (!$is_pro) echo 'disabled'; ?>>
+                        <?php if (!$is_pro && !(defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true)) echo 'disabled'; ?>>
                     <?php _e('Generate Audio Version (AI)', 'audio-press-ai'); ?>
                 </button>
             <?php endif; ?>
@@ -396,11 +418,6 @@ class Audio_Press_AI {
             wp_send_json_error(array('message' => __('Insufficient permissions', 'audio-press-ai')));
         }
         
-        // Check Pro license
-        if (!$this->is_pro_user()) {
-            wp_send_json_error(array('message' => __('Pro license required. Please upgrade.', 'audio-press-ai')));
-        }
-        
         // Validate and sanitize post ID
         if (!isset($_POST['post_id'])) {
             wp_send_json_error(array('message' => __('Post ID is required', 'audio-press-ai')));
@@ -422,9 +439,21 @@ class Audio_Press_AI {
             wp_send_json_error(array('message' => __('Post not found', 'audio-press-ai')));
         }
         
+        // Check Pro license (unless in dev mode)
+        if (!(defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true)) {
+            if (!$this->is_pro_user()) {
+                wp_send_json_error(array('message' => __('Pro license required. Please upgrade.', 'audio-press-ai')));
+            }
+        }
+        
         $license_key = $this->get_license_key();
         if (!$license_key) {
-            wp_send_json_error(array('message' => __('License key not found', 'audio-press-ai')));
+            // In dev mode, use TEST key if get_license_key fails
+            if (defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true) {
+                $license_key = 'TEST';
+            } else {
+                wp_send_json_error(array('message' => __('License key not found', 'audio-press-ai')));
+            }
         }
         
         // Get and validate options
@@ -759,9 +788,11 @@ class Audio_Press_AI {
             return;
         }
         
-        // Check Pro license
-        if (!$this->is_pro_user()) {
-            return;
+        // Check Pro license (unless in dev mode)
+        if (!(defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true)) {
+            if (!$this->is_pro_user()) {
+                return;
+            }
         }
         
         // Only for published posts
