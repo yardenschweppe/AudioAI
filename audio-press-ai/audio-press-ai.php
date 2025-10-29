@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
 define('AUDIO_PRESS_AI_VERSION', '1.0.0');
 define('AUDIO_PRESS_AI_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('AUDIO_PRESS_AI_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('AUDIO_PRESS_AI_API_URL', 'https://chatix.co.il'); // Change to your server URL
+define('AUDIO_PRESS_AI_API_URL', 'https://audio-api.chatix.co.il;'); // Audio-Press AI API Server
 
 // Development mode - set to true for testing without Pro license
 // Change to false for production
