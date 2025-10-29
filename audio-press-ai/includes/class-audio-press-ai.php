@@ -42,8 +42,21 @@ class Audio_Press_AI {
             return false;
         }
         
-        $fs = apai_fs();
-        return $fs->is_paying();
+        try {
+            $fs = apai_fs();
+            // Check if is_paying is a method (callable)
+            if (is_callable(array($fs, 'is_paying'))) {
+                return $fs->is_paying();
+            } elseif (isset($fs->is_paying)) {
+                // Fallback if it's a property
+                return (bool) $fs->is_paying;
+            }
+        } catch (Exception $e) {
+            // Silently fail if there's an error
+            return false;
+        }
+        
+        return false;
     }
     
     /**
@@ -76,15 +89,50 @@ class Audio_Press_AI {
      * Add admin menu page
      */
     public function add_admin_menu() {
-        // Freemius handles the main menu, so we add a submenu
-        add_submenu_page(
-            'audio-press-ai',
-            __('Settings', 'audio-press-ai'),
-            __('Settings', 'audio-press-ai'),
-            'manage_options',
-            'audio-press-ai-settings',
-            array($this, 'render_settings_page')
-        );
+        // Check if Freemius is available and has created a menu
+        $freemius_available = false;
+        if (function_exists('apai_fs')) {
+            $fs = apai_fs();
+            // Check if Freemius object is valid (not dummy object)
+            if (is_object($fs) && method_exists($fs, 'has_menu')) {
+                try {
+                    $freemius_available = $fs->has_menu();
+                } catch (Exception $e) {
+                    $freemius_available = false;
+                }
+            }
+        }
+        
+        if ($freemius_available) {
+            // Freemius handles the main menu, so we add a submenu
+            add_submenu_page(
+                'audio-press-ai',
+                __('Settings', 'audio-press-ai'),
+                __('Settings', 'audio-press-ai'),
+                'manage_options',
+                'audio-press-ai-settings',
+                array($this, 'render_settings_page')
+            );
+        } else {
+            // Freemius not available - create our own menu
+            add_menu_page(
+                __('Audio-Press AI', 'audio-press-ai'),
+                __('Audio-Press AI', 'audio-press-ai'),
+                'manage_options',
+                'audio-press-ai',
+                array($this, 'render_settings_page'),
+                'dashicons-controls-volumeon',
+                30
+            );
+            add_submenu_page(
+                'audio-press-ai',
+                __('Settings', 'audio-press-ai'),
+                __('Settings', 'audio-press-ai'),
+                'manage_options',
+                'audio-press-ai-settings',
+                array($this, 'render_settings_page')
+            );
+        }
     }
     
     /**

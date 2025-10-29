@@ -166,6 +166,11 @@ function incrementGenerateCount(licenseKey, wpUserId = null) {
  * Generate audio using OpenAI TTS
  */
 async function generateAudioWithOpenAI(text, model, voice) {
+    // Check if OpenAI API key is configured
+    if (!OPENAI_API_KEY || OPENAI_API_KEY.trim() === '') {
+        throw new Error('OpenAI API key not configured. Please set OPENAI_API_KEY environment variable.');
+    }
+    
     try {
         const response = await axios.post(
             'https://api.openai.com/v1/audio/speech',

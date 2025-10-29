@@ -60,14 +60,27 @@ if (!function_exists('apai_fs')) {
                 ));
             } else {
                 // Freemius SDK not found - return dummy object to prevent errors
-                $apai_fs = new stdClass();
-                $apai_fs->is_paying = false;
-                $apai_fs->_get_license = false;
+                // Create a class to mimic Freemius interface with methods
+                $apai_fs = new class {
+                    public function is_paying() {
+                        return false;
+                    }
+                    public function _get_license() {
+                        return false;
+                    }
+                    public function has_menu() {
+                        return false;
+                    }
+                };
                 
-                // Show admin notice if we're in admin
-                if (is_admin()) {
+                // Show admin notice if we're in admin (only once)
+                static $notice_shown = false;
+                if (is_admin() && !$notice_shown) {
+                    $notice_shown = true;
                     add_action('admin_notices', function() {
-                        echo '<div class="notice notice-error"><p><strong>Audio-Press AI:</strong> Freemius SDK not found. Please download and install the Freemius SDK in the <code>freemius</code> directory. <a href="https://github.com/Freemius/wordpress-sdk" target="_blank">Download SDK</a></p></div>';
+                        if (current_user_can('manage_options')) {
+                            echo '<div class="notice notice-error"><p><strong>Audio-Press AI:</strong> Freemius SDK not found. Please download and install the Freemius SDK in the <code>freemius</code> directory. <a href="https://github.com/Freemius/wordpress-sdk" target="_blank">Download SDK</a></p></div>';
+                        }
                     });
                 }
             }
