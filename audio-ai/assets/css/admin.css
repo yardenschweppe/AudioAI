@@ -1,0 +1,38 @@
+#audio-press-ai-container {
+    margin: 10px 0;
+}
+
+#audio-press-ai-player-wrapper {
+    margin-bottom: 10px;
+}
+
+#audio-press-ai-player-wrapper audio {
+    width: 100%;
+    margin-bottom: 10px;
+}
+
+#audio-press-ai-status {
+    padding: 10px;
+    background: #f0f0f1;
+    border-left: 4px solid #2271b1;
+    margin-top: 10px;
+}
+
+#audio-press-ai-status .spinner {
+    float: none;
+    margin: 0 5px 0 0;
+}
+
+#audio-press-ai-generate,
+#audio-press-ai-regenerate,
+#audio-press-ai-delete {
+    cursor: pointer;
+}
+
+#audio-press-ai-generate:disabled,
+#audio-press-ai-regenerate:disabled,
+#audio-press-ai-delete:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
