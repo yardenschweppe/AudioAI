@@ -1,10 +1,23 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-require('dotenv').config();
+const crypto = require('crypto');
 const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+
+// Load .env file (if exists)
+const dotenvResult = require('dotenv').config();
+
+// Log .env loading status
+if (dotenvResult.error) {
+    console.log('⚠️  .env file not found or error loading:', dotenvResult.error.message);
+    console.log('   Using environment variables or default values');
+} else {
+    console.log('✅ .env file loaded successfully');
+    console.log(`   Found ${Object.keys(dotenvResult.parsed || {}).length} environment variables`);
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -19,9 +32,24 @@ const FREEMIUS_PLUGIN_ID = process.env.FREEMIUS_PLUGIN_ID || 21493;
 const PIPER_MODEL_PATH = '/opt/piper/voices/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx';
 const MONTHLY_CHAR_LIMIT = 200000; // 200K characters per month
 
-// Development/Test Mode - מאפשר לנסות בלי Freemius (השתמש ב-"TEST" כ-license_key)
+// Development/Test Mode - מאפשר לנסות בלי Freemius
+// הגדר TEST_MODE=true ב-.env או הפעל עם NODE_ENV=development כדי לדלג על בדיקת Freemius לחלוטין
+// ב-TEST_MODE, השרת לא ינסה להתחבר ל-Freemius API בכלל
 const TEST_MODE = process.env.TEST_MODE === 'true' || process.env.NODE_ENV === 'development';
 const TEST_LICENSE_KEY = 'TEST'; // במקרה של test mode, השתמש ב-"TEST" כ-license_key
+
+// Debug: Print environment configuration on startup
+console.log('\n📋 Environment Configuration:');
+console.log(`   TEST_MODE: ${TEST_MODE} (from TEST_MODE=${process.env.TEST_MODE || 'undefined'}, NODE_ENV=${process.env.NODE_ENV || 'undefined'})`);
+console.log(`   FREEMIUS_DEVELOPER_ID: ${FREEMIUS_DEVELOPER_ID}`);
+console.log(`   FREEMIUS_PLUGIN_ID: ${FREEMIUS_PLUGIN_ID}`);
+console.log(`   FREEMIUS_PUBLIC_KEY: ${FREEMIUS_PUBLIC_KEY.substring(0, 10)}...`);
+if (TEST_MODE) {
+    console.log('   ⚠️  TEST MODE ENABLED - Freemius validation will be skipped');
+} else {
+    console.log('   🔐 Freemius validation is ACTIVE');
+}
+console.log('');
 
 // Note: Audio files are sent directly to WordPress, no storage needed on this server
 
@@ -51,20 +79,80 @@ async function getFreemiusProductInfo(productId, bearerToken) {
 }
 
 /**
- * Validate license with Freemius
+ * Generate FS Authorization headers for Freemius API
+ * Based on Freemius SDK implementation
+ */
+function generateFSAuthorization(resourceUrl, method, body) {
+    const now = new Date();
+    const date = now.toUTCString(); // RFC 2822 format
+    
+    let contentMd5 = '';
+    let contentType = '';
+    
+    if (method === 'POST' || method === 'PUT') {
+        contentType = 'application/json';
+        if (body) {
+            const bodyString = typeof body === 'string' ? body : JSON.stringify(body);
+            contentMd5 = crypto.createHash('md5').update(bodyString).digest('hex');
+        }
+    }
+    
+    // Build string to sign
+    const stringToSign = [
+        method.toUpperCase(),
+        contentMd5,
+        contentType,
+        date,
+        resourceUrl
+    ].join('\n');
+    
+    // Generate HMAC-SHA256 signature
+    const signature = crypto
+        .createHmac('sha256', FREEMIUS_SECRET_KEY)
+        .update(stringToSign)
+        .digest('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '');
+    
+    // Determine auth type (FS or FSP)
+    const authType = FREEMIUS_SECRET_KEY !== FREEMIUS_PUBLIC_KEY ? 'FS' : 'FSP';
+    
+    // Build authorization header
+    const authorization = `${authType} ${FREEMIUS_DEVELOPER_ID}:${FREEMIUS_PUBLIC_KEY}:${signature}`;
+    
+    const headers = {
+        'Date': date,
+        'Authorization': authorization,
+        'Content-Type': contentType || 'application/json'
+    };
+    
+    if (contentMd5) {
+        headers['Content-MD5'] = contentMd5;
+    }
+    
+    return headers;
+}
+
+/**
+ * Validate license with Freemius using FS Authorization
  */
 async function validateFreemiusLicense(licenseKey) {
     try {
+        const resourceUrl = `:/developers/${FREEMIUS_DEVELOPER_ID}/plugins/${FREEMIUS_PLUGIN_ID}/licenses/validate.json`;
+        const url = `${FREEMIUS_API_URL}/${FREEMIUS_DEVELOPER_ID}/plugins/${FREEMIUS_PLUGIN_ID}/licenses/validate.json`;
+        
+        const requestBody = {
+            license_key: licenseKey
+        };
+        
+        const headers = generateFSAuthorization(resourceUrl, 'POST', requestBody);
+        
         const response = await axios.post(
-            `${FREEMIUS_API_URL}/${FREEMIUS_DEVELOPER_ID}/plugins/${FREEMIUS_PLUGIN_ID}/licenses/validate.json`,
+            url,
+            requestBody,
             {
-                license_key: licenseKey
-            },
-            {
-                auth: {
-                    username: FREEMIUS_PUBLIC_KEY,
-                    password: FREEMIUS_SECRET_KEY
-                }
+                headers: headers
             }
         );
 
@@ -73,7 +161,11 @@ async function validateFreemiusLicense(licenseKey) {
             license: response.data.license
         };
     } catch (error) {
-        console.error('Freemius validation error:', error.response?.data || error.message);
+        console.error('Freemius validation error:', JSON.stringify({
+            path: error.response?.data?.path || 'unknown',
+            error: error.response?.data?.error || { message: error.message },
+            request: { license_key: licenseKey.substring(0, 8) + '...', developer_id: FREEMIUS_DEVELOPER_ID, plugin_id: FREEMIUS_PLUGIN_ID }
+        }, null, 2));
         return {
             valid: false,
             error: error.response?.data?.error?.message || 'License validation failed'
@@ -268,10 +360,11 @@ app.post('/generate', async (req, res) => {
         // Step 1: Validate license with Freemius (או מצב בדיקה)
         console.log(`Validating license: ${license_key.substring(0, 8)}...`);
         
-        // מצב בדיקה - דלג על בדיקת Freemius אם זה TEST_MODE ו-license_key הוא "TEST"
+        // מצב בדיקה - דלג על בדיקת Freemius אם זה TEST_MODE
+        // ב-TEST_MODE, אנחנו לא מנסים להתחבר ל-Freemius בכלל
         let validation;
-        if (TEST_MODE && license_key === TEST_LICENSE_KEY) {
-            console.log('⚠️  TEST MODE: Skipping Freemius validation');
+        if (TEST_MODE) {
+            console.log('⚠️  TEST MODE: Skipping Freemius validation (Freemius is disabled)');
             validation = {
                 valid: true,
                 license: { is_active: true, test_mode: true }
@@ -439,8 +532,9 @@ app.post('/usage', async (req, res) => {
         }
         
         // Validate license (או מצב בדיקה)
+        // ב-TEST_MODE, אנחנו לא מנסים להתחבר ל-Freemius בכלל
         let validation;
-        if (TEST_MODE && license_key === TEST_LICENSE_KEY) {
+        if (TEST_MODE) {
             validation = {
                 valid: true,
                 license: { is_active: true, test_mode: true }
@@ -501,7 +595,16 @@ process.on('uncaughtException', (error) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Audio-Press AI Server running on port ${PORT}`);
-    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log('');
+    console.log('🚀 Audio-Press AI Server started successfully!');
+    console.log(`   Port: ${PORT}`);
+    console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`   Test Mode: ${TEST_MODE ? '✅ ENABLED (Freemius disabled)' : '❌ DISABLED (Freemius active)'}`);
+    console.log('');
+    if (!TEST_MODE) {
+        console.log('⚠️  WARNING: Freemius validation is ACTIVE');
+        console.log('   To disable Freemius, set TEST_MODE=true in .env or NODE_ENV=development');
+        console.log('');
+    }
 });
 
