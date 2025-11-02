@@ -372,6 +372,7 @@ class Audio_Press_AI {
             <?php if ($audio_url): ?>
                 <div id="audio-press-ai-player-wrapper">
                     <audio controls style="width: 100%; margin-bottom: 10px;">
+                        <source src="<?php echo esc_url($audio_url); ?>" type="audio/wav">
                         <source src="<?php echo esc_url($audio_url); ?>" type="audio/mpeg">
                         <?php _e('Your browser does not support the audio element.', 'audio-press-ai'); ?>
                     </audio>
@@ -609,9 +610,23 @@ class Audio_Press_AI {
             wp_send_json_error(array('message' => __('Failed to save audio file', 'audio-press-ai')));
         }
         
+        // Get mime type from WordPress based on file extension
+        $wp_file_type = wp_check_filetype($filename, null);
+        $mime_type = $wp_file_type['type'];
+        
+        // Fallback to server's mime type if WordPress couldn't detect it
+        if (!$mime_type && isset($response_data['audio_mime'])) {
+            $mime_type = sanitize_text_field($response_data['audio_mime']);
+        }
+        
+        // Final fallback
+        if (!$mime_type) {
+            $mime_type = 'audio/wav';
+        }
+        
         // Create attachment
         $attachment = array(
-            'post_mime_type' => 'audio/mpeg',
+            'post_mime_type' => $mime_type,
             'post_title' => sanitize_text_field($post_title . ' - Audio'),
             'post_content' => '',
             'post_status' => 'inherit',
@@ -725,16 +740,57 @@ class Audio_Press_AI {
         $response = wp_remote_request($url, $args);
         
         if (is_wp_error($response)) {
-            return $response;
+            $error_code = $response->get_error_code();
+            $error_message = $response->get_error_message();
+            
+            // Provide more user-friendly error messages
+            if (strpos($error_message, 'timeout') !== false || strpos($error_code, 'timeout') !== false) {
+                return new WP_Error('remote_api_error', __('Request timeout: The server took too long to respond. Please try again.', 'audio-press-ai'));
+            } elseif (strpos($error_message, 'connection') !== false || strpos($error_code, 'connection') !== false) {
+                return new WP_Error('remote_api_error', __('Connection error: Could not connect to the server. Please check your API server URL.', 'audio-press-ai'));
+            }
+            
+            return new WP_Error('remote_api_error', sprintf(__('Network error: %s', 'audio-press-ai'), $error_message));
         }
         
         $status_code = wp_remote_retrieve_response_code($response);
         
         if ($status_code !== 200) {
             $error_data = json_decode(wp_remote_retrieve_body($response), true);
+            
+            // Provide specific error messages for common HTTP status codes
             $error_message = isset($error_data['error']) 
                 ? $error_data['error'] 
-                : sprintf(__('Server error (HTTP %d)', 'audio-press-ai'), $status_code);
+                : '';
+            
+            if (empty($error_message)) {
+                switch ($status_code) {
+                    case 400:
+                        $error_message = __('Bad request: Invalid parameters sent to server', 'audio-press-ai');
+                        break;
+                    case 401:
+                        $error_message = __('Unauthorized: Authentication failed', 'audio-press-ai');
+                        break;
+                    case 403:
+                        $error_message = __('Forbidden: License validation failed', 'audio-press-ai');
+                        break;
+                    case 429:
+                        $error_message = __('Rate limit exceeded: Monthly character limit reached', 'audio-press-ai');
+                        break;
+                    case 502:
+                        $error_message = __('Bad Gateway: The server is not responding. Please check if the server is running.', 'audio-press-ai');
+                        break;
+                    case 503:
+                        $error_message = __('Service unavailable: The server is temporarily down', 'audio-press-ai');
+                        break;
+                    case 504:
+                        $error_message = __('Gateway timeout: The server took too long to respond', 'audio-press-ai');
+                        break;
+                    default:
+                        $error_message = sprintf(__('Server error (HTTP %d)', 'audio-press-ai'), $status_code);
+                }
+            }
+            
             return new WP_Error('remote_api_error', $error_message);
         }
         
@@ -770,6 +826,7 @@ class Audio_Press_AI {
         $player_html = '<div class="audio-press-ai-player-wrapper">';
         $player_html .= '<span class="audio-label">' . esc_html__('האזנה לפוסט', 'audio-press-ai') . '</span>';
         $player_html .= '<audio controls class="audio-press-ai-player">';
+        $player_html .= '<source src="' . esc_url($audio_url) . '" type="audio/wav">';
         $player_html .= '<source src="' . esc_url($audio_url) . '" type="audio/mpeg">';
         $player_html .= esc_html__('Your browser does not support the audio element.', 'audio-press-ai');
         $player_html .= '</audio>';

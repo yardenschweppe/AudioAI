@@ -187,11 +187,26 @@ async function generateAudioWithPiper(text) {
         // printf 'escaped_text' | piper --model /path/to/model.onnx --output_file /tmp/tempfile.wav
         const command = `printf '${escapedText}' | /usr/local/bin/piper -m ${PIPER_MODEL_PATH} -f ${tempFilePath}`;
 
-        // 4. הרצת הפקודה
-        exec(command, (error, stdout, stderr) => {
+        // 4. הרצת הפקודה עם timeout (60 seconds max)
+        const execOptions = {
+            maxBuffer: 10 * 1024 * 1024, // 10MB max output
+            timeout: 60000 // 60 seconds timeout
+        };
+
+        let timeoutId;
+        const childProcess = exec(command, execOptions, (error, stdout, stderr) => {
+            // Clear timeout if command completes
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+            }
+
             if (error) {
                 console.error(`Piper exec error: ${error}`);
                 console.error(`Piper stderr: ${stderr}`);
+                // Clean up temp file if it exists
+                if (fs.existsSync(tempFilePath)) {
+                    fs.unlinkSync(tempFilePath);
+                }
                 return reject(new Error(`Failed to generate audio with Piper: ${stderr || error.message}`));
             }
 
@@ -214,6 +229,19 @@ async function generateAudioWithPiper(text) {
                 resolve(data); // data is a Buffer
             });
         });
+
+        // Set up timeout to kill process if it takes too long
+        timeoutId = setTimeout(() => {
+            if (!childProcess.killed) {
+                console.error('Piper command timeout - killing process');
+                childProcess.kill('SIGTERM');
+                // Clean up temp file
+                if (fs.existsSync(tempFilePath)) {
+                    fs.unlinkSync(tempFilePath);
+                }
+                reject(new Error('Audio generation timeout: Process took longer than 60 seconds'));
+            }
+        }, 60000);
     });
 }
 
@@ -277,9 +305,36 @@ app.post('/generate', async (req, res) => {
         const generateCount = incrementGenerateCount(license_key, wp_user_id);
         console.log(`Generate count for license ${license_key.substring(0, 8)}... (WP User ID: ${wp_user_id || 'N/A'}): ${generateCount}`);
         
-        // Step 3: Generate audio with OpenAI
+        // Step 3: Generate audio with Piper
         console.log(`Generating audio for ${textLength} characters...`);
-        const audioBuffer = await generateAudioWithPiper(text);        
+        let audioBuffer;
+        try {
+            audioBuffer = await generateAudioWithPiper(text);
+        } catch (audioError) {
+            console.error('Audio generation failed:', audioError);
+            // Revert usage since generation failed
+            const usageEntry = usageDB.get(license_key);
+            if (usageEntry) {
+                usageEntry.chars_used = Math.max(0, usageEntry.chars_used - textLength);
+            }
+            return res.status(500).json({
+                error: audioError.message || 'Failed to generate audio'
+            });
+        }
+        
+        // Validate audio buffer
+        if (!audioBuffer || audioBuffer.length === 0) {
+            console.error('Generated audio buffer is empty');
+            // Revert usage since generation failed
+            const usageEntry = usageDB.get(license_key);
+            if (usageEntry) {
+                usageEntry.chars_used = Math.max(0, usageEntry.chars_used - textLength);
+            }
+            return res.status(500).json({
+                error: 'Generated audio is empty'
+            });
+        }
+        
         // Step 4: Return audio binary directly to client (WordPress will save it)
         // Convert buffer to base64 for JSON transmission
         const audioBase64 = audioBuffer.toString('base64');
@@ -290,7 +345,7 @@ app.post('/generate', async (req, res) => {
             audio_data: audioBase64, // Base64 encoded audio file
             audio_mime: 'audio/wav',
             filename: `audio_${Date.now()}.wav`,
-                        usage: {
+            usage: {
                 used: usage.used,
                 limit: usage.limit,
                 remaining: usage.remaining,
@@ -301,9 +356,14 @@ app.post('/generate', async (req, res) => {
         
     } catch (error) {
         console.error('Error in /generate:', error);
-        res.status(500).json({
-            error: error.message || 'Internal server error'
-        });
+        console.error('Error stack:', error.stack);
+        
+        // Make sure response hasn't been sent yet
+        if (!res.headersSent) {
+            res.status(500).json({
+                error: error.message || 'Internal server error'
+            });
+        }
     }
 });
 
@@ -427,6 +487,16 @@ app.post('/usage', async (req, res) => {
             error: error.message || 'Internal server error'
         });
     }
+});
+
+// Process-level error handlers to prevent crashes
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+    // Don't exit, but log the error so the server keeps running
 });
 
 const PORT = process.env.PORT || 3000;

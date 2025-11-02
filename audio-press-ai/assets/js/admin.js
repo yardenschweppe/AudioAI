@@ -36,6 +36,7 @@ jQuery(document).ready(function($) {
                     // Replace container content with player
                     var html = '<div id="audio-press-ai-player-wrapper">';
                     html += '<audio controls style="width: 100%; margin-bottom: 10px;">';
+                    html += '<source src="' + response.data.audio_url + '" type="audio/wav">';
                     html += '<source src="' + response.data.audio_url + '" type="audio/mpeg">';
                     html += 'Your browser does not support the audio element.';
                     html += '</audio>';
