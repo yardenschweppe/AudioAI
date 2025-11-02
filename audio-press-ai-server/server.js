@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const crypto = require('crypto');
-const { exec } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -30,6 +30,7 @@ const FREEMIUS_PUBLIC_KEY = process.env.FREEMIUS_PUBLIC_KEY || 'pk_c1f4731e093f2
 const FREEMIUS_SECRET_KEY = process.env.FREEMIUS_SECRET_KEY || 'sk_0MMUBME@.WS)<IG1GLBsW(~w<0b)X';
 const FREEMIUS_PLUGIN_ID = process.env.FREEMIUS_PLUGIN_ID || 21493;
 const PIPER_MODEL_PATH = '/opt/piper/voices/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx';
+const PIPER_BIN = process.env.PIPER_BIN || '/opt/piper/.venv/bin/piper'; // נתיב אבסולוטי
 const MONTHLY_CHAR_LIMIT = 200000; // 200K characters per month
 
 // Development/Test Mode - מאפשר לנסות בלי Freemius
@@ -258,82 +259,67 @@ function incrementGenerateCount(licenseKey, wpUserId = null) {
 }
 
 /**
- * Generate audio using OpenAI TTS
- */
-/**
  * Generate audio using Piper TTS
  */
+function runPiper(text, modelPath, outPath) {
+    return new Promise((resolve, reject) => {
+        const p = spawn(PIPER_BIN, ["-m", modelPath, "-f", outPath], {
+            stdio: ["pipe", "ignore", "pipe"],
+        });
+
+        let err = "";
+        p.stderr.on("data", (d) => (err += d.toString()));
+
+        p.on("close", (code) => {
+            if (code === 0) {
+                resolve();
+            } else {
+                reject(new Error(err || `piper exited ${code}`));
+            }
+        });
+
+        p.stdin.end(text + "\n"); // אין צורך ב-printf ואין בעיות ציטוטים בעברית
+    });
+}
+
 async function generateAudioWithPiper(text) {
     return new Promise((resolve, reject) => {
         // 1. יצירת נתיב לקובץ זמני
-        // אנו משתמשים בתיקיית /tmp/ שהיא תיקייה סטנדרטית לקבצים זמניים
         const tempFileName = `piper_out_${Date.now()}_${Math.floor(Math.random() * 1000)}.wav`;
         const tempFilePath = path.join('/tmp', tempFileName);
 
-        // 2. טיפול בטקסט עבור פקודת ה-shell
-        // טיפול בגרש בודד ('') כדי למנוע שבירת הפקודה
-        const escapedText = text.replace(/'/g, "'\\''");
+        // 2. הרצת Piper עם spawn - שליחת טקסט ישירות ל-stdin
+        runPiper(text, PIPER_MODEL_PATH, tempFilePath)
+            .then(() => {
+                // 3. קריאת הקובץ שנוצר
+                fs.readFile(tempFilePath, (readError, data) => {
+                    // 4. מחיקת הקובץ הזמני (ניקיון)
+                    if (fs.existsSync(tempFilePath)) {
+                        fs.unlink(tempFilePath, (unlinkError) => {
+                            if (unlinkError) {
+                                console.error(`Warning: Failed to delete temp file: ${tempFilePath}`);
+                            }
+                        });
+                    }
 
-        // 3. בניית הפקודה של Piper
-        // אנו משתמשים ב-symlink הגלובלי שיצרנו
-        // printf 'escaped_text' | piper --model /path/to/model.onnx --output_file /tmp/tempfile.wav
-        const PIPER_MODEL_PATH = "/opt/piper/voices/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx";
-const command = `printf '${escapedText}' | /usr/local/bin/piper -m ${PIPER_MODEL_PATH} -f ${tempFilePath}`;
-        // 4. הרצת הפקודה עם timeout (60 seconds max)
-        const execOptions = {
-            maxBuffer: 10 * 1024 * 1024, // 10MB max output
-            timeout: 60000 // 60 seconds timeout
-        };
+                    if (readError) {
+                        console.error(`Error reading temp file: ${readError}`);
+                        return reject(new Error(`Failed to read generated audio file: ${readError.message}`));
+                    }
 
-        let timeoutId;
-        const childProcess = exec(command, execOptions, (error, stdout, stderr) => {
-            // Clear timeout if command completes
-            if (timeoutId) {
-                clearTimeout(timeoutId);
-            }
-
-            if (error) {
-                console.error(`Piper exec error: ${error}`);
-                console.error(`Piper stderr: ${stderr}`);
+                    // 5. החזרת הדאטה של האודיו (Buffer)
+                    console.log(`Piper successfully generated ${data.length} bytes.`);
+                    resolve(data); // data is a Buffer
+                });
+            })
+            .catch((error) => {
                 // Clean up temp file if it exists
                 if (fs.existsSync(tempFilePath)) {
                     fs.unlinkSync(tempFilePath);
                 }
-                return reject(new Error(`Failed to generate audio with Piper: ${stderr || error.message}`));
-            }
-
-            // 5. קריאת הקובץ שנוצר
-            fs.readFile(tempFilePath, (readError, data) => {
-                if (readError) {
-                    console.error(`Error reading temp file: ${readError}`);
-                    return reject(new Error(`Failed to read generated audio file: ${readError.message}`));
-                }
-
-                // 6. מחיקת הקובץ הזמני (ניקיון)
-                fs.unlink(tempFilePath, (unlinkError) => {
-                    if (unlinkError) {
-                        console.error(`Warning: Failed to delete temp file: ${tempFilePath}`);
-                    }
-                });
-
-                // 7. החזרת הדאטה של האודיו (Buffer)
-                console.log(`Piper successfully generated ${data.length} bytes.`);
-                resolve(data); // data is a Buffer
+                console.error(`Piper error: ${error.message}`);
+                reject(new Error(`Failed to generate audio with Piper: ${error.message}`));
             });
-        });
-
-        // Set up timeout to kill process if it takes too long
-        timeoutId = setTimeout(() => {
-            if (!childProcess.killed) {
-                console.error('Piper command timeout - killing process');
-                childProcess.kill('SIGTERM');
-                // Clean up temp file
-                if (fs.existsSync(tempFilePath)) {
-                    fs.unlinkSync(tempFilePath);
-                }
-                reject(new Error('Audio generation timeout: Process took longer than 60 seconds'));
-            }
-        }, 60000);
     });
 }
 
