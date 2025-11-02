@@ -31,6 +31,54 @@ define('AUDIO_PRESS_AI_DEV_MODE', true); // Set to false in production!
 // Set to true to enable Freemius when ready
 define('AUDIO_PRESS_AI_FREEMIUS_ENABLED', false); // Change to true when ready to activate Freemius
 
+// Block Freemius asset requests if disabled
+if (!defined('AUDIO_PRESS_AI_FREEMIUS_ENABLED') || !AUDIO_PRESS_AI_FREEMIUS_ENABLED) {
+    // Prevent Freemius from trying to load assets by blocking its hooks early
+    add_action('init', function() {
+        // Remove any Freemius hooks if they exist
+        remove_all_actions('fs_after_license_loaded');
+        remove_all_actions('fs_after_account_loaded');
+        remove_all_actions('fs_account_page_load_before_departure');
+        remove_all_actions('fs_after_plugin_installed');
+    }, 1);
+    
+    // Block Freemius asset URLs (scripts and styles)
+    add_filter('script_loader_src', function($src, $handle) {
+        if ($src && (strpos($src, 'freemius') !== false || strpos($src, 'api.freemius.com') !== false)) {
+            return false; // Block Freemius scripts
+        }
+        return $src;
+    }, 10, 2);
+    
+    add_filter('style_loader_src', function($src, $handle) {
+        if ($src && (strpos($src, 'freemius') !== false || strpos($src, 'api.freemius.com') !== false)) {
+            return false; // Block Freemius styles
+        }
+        return $src;
+    }, 10, 2);
+    
+    // Block HTTP requests to Freemius API if attempted
+    add_filter('http_request_args', function($args, $url) {
+        if (is_string($url) && (strpos($url, 'api.freemius.com') !== false || strpos($url, 'freemius.com') !== false)) {
+            // Block all requests to Freemius API
+            return false;
+        }
+        return $args;
+    }, 10, 2);
+    
+    // Prevent WordPress from trying to update plugin via Freemius
+    add_filter('site_transient_update_plugins', function($value) {
+        if (isset($value->response)) {
+            foreach ($value->response as $plugin_file => $plugin_data) {
+                if (strpos($plugin_file, 'audio-press-ai') !== false && isset($plugin_data->package) && strpos($plugin_data->package, 'freemius') !== false) {
+                    unset($value->response[$plugin_file]);
+                }
+            }
+        }
+        return $value;
+    });
+}
+
 // Freemius SDK integration
 if (!function_exists('apai_fs')) {
     // Create a helper function for easy access to the Freemius SDK instance.
