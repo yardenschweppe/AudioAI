@@ -5,13 +5,7 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-// טעינת ESM דינמית מתוך CommonJS
-// טעינת ESM franc-min מתוך CommonJS
-let _franc;
-async function detectISO3(text) {
-  if (!_franc) _franc = (await import('franc-min')).default;
-  return _franc(text || '', { minLength: 10 });
-}
+const { franc } = require('franc-min');
 
 // Load .env file (if exists)
 const dotenvResult = require('dotenv').config();
@@ -323,46 +317,136 @@ function incrementGenerateCount(licenseKey, wpUserId = null) {
  * - jpn -> zh (Japanese, mapped to CJK)
  * - kor -> zh (Korean, mapped to CJK)
  */
-// Async language detection using franc-min (ESM) via detectISO3()
-// hintLang can be 'pt_PT', 'pt_BR', 'nl_BE' etc.
-async function detectLanguage(text, hintLang) {
+/**
+ * Detect language from text using franc-min library (professional LID)
+ * Returns language code compatible with our Piper models
+ * 
+ * franc-min returns ISO 639-3 codes, we map them to our language codes:
+ * - eng -> en
+ * - spa -> es
+ * - deu -> de
+ * - nld -> nl_NL (default to Netherlands Dutch)
+ * - por -> pt_BR (default to Brazilian Portuguese)
+ * - heb -> he
+ * - ara -> ar
+ * - rus -> ru
+ * - cmn/zho -> zh (Chinese)
+ * - jpn -> zh (Japanese, mapped to CJK)
+ * - kor -> zh (Korean, mapped to CJK)
+ * 
+ * @param {string} text - Text to detect language for
+ * @param {string} hintLang - Optional hint language (e.g., 'pt_PT', 'pt_BR', 'nl_BE')
+ * @returns {string} Language code
+ */
+function detectLanguage(text, hintLang) {
+    // Remove excessive whitespace but keep some structure for better detection
     const cleanText = (text || '').trim().replace(/\s+/g, ' ');
-    const iso3 = cleanText.length < 10 ? 'eng' : await detectISO3(cleanText);
-  
-    // Map ISO-639-3 -> our Piper keys
-    let lang = ({
-      eng: 'en',
-      spa: 'es',
-      deu: 'de',
-      nld: 'nl_NL',
-      por: 'pt_BR',
-      heb: 'he',
-      ara: 'ar',
-      rus: 'ru',
-      cmn: 'zh',
-      zho: 'zh',
-      jpn: 'zh',
-      kor: 'zh',
-    })[iso3] || 'en';
-  
-    // Respect client hint for dialects
-    if (lang === 'pt_BR' && hintLang) {
-      const h = hintLang.replace('-', '_');
-      if (h === 'pt_PT' || h === 'pt_BR') lang = h;
+    
+    if (cleanText.length < 10) {
+        // Too short for reliable detection - default to English
+        return 'en';
     }
-    if (lang === 'nl_NL' && hintLang) {
-      const h = hintLang.replace('-', '_');
-      if (h === 'nl_BE' || h === 'nl_NL') lang = h;
+    
+    try {
+        // Use franc-min for language detection
+        // franc returns ISO 639-3 code (3 letters) or 'und' (undefined) if unsure
+        // franc is synchronous, no need for await
+        const detectedCode = franc(cleanText, { minLength: 10 });
+        
+        // franc may return 'und' (undefined) for very short or mixed text
+        if (!detectedCode || detectedCode === 'und') {
+            console.log(`⚠️  franc returned undefined/und for text, defaulting to English`);
+            return 'en';
+        }
+        
+        // Map franc ISO 639-3 codes to our language codes
+        const languageMap = {
+            // English variants
+            'eng': 'en',
+            
+            // Spanish
+            'spa': 'es',
+            
+            // German
+            'deu': 'de',
+            
+            // Dutch - default to Netherlands Dutch
+            'nld': 'nl_NL',
+            
+            // Portuguese - default to Brazilian Portuguese
+            'por': 'pt_BR',
+            
+            // Hebrew
+            'heb': 'he',
+            
+            // Arabic
+            'ara': 'ar',
+            
+            // Russian
+            'rus': 'ru',
+            
+            // Chinese - map to zh (CJK category)
+            'cmn': 'zh', // Mandarin Chinese
+            'zho': 'zh', // Chinese (generic)
+            
+            // Japanese - map to zh (CJK category)
+            'jpn': 'zh',
+            
+            // Korean - map to zh (CJK category)
+            'kor': 'zh',
+        };
+        
+        // Check if detected language is in our map
+        let mappedLanguage = languageMap[detectedCode];
+        
+        // If detected Portuguese, use hint or default to Brazilian (franc doesn't distinguish PT vs BR)
+        if (detectedCode === 'por') {
+            if (hintLang) {
+                const h = hintLang.replace('-', '_');
+                if (h === 'pt_PT' || h === 'pt_BR') {
+                    mappedLanguage = h;
+                } else {
+                    mappedLanguage = 'pt_BR'; // Default to Brazilian
+                }
+            } else {
+                mappedLanguage = 'pt_BR'; // Default to Brazilian
+            }
+        }
+        
+        // If detected Dutch, use hint or default to Netherlands Dutch (franc doesn't distinguish NL vs BE)
+        if (detectedCode === 'nld') {
+            if (hintLang) {
+                const h = hintLang.replace('-', '_');
+                if (h === 'nl_BE' || h === 'nl_NL') {
+                    mappedLanguage = h;
+                } else {
+                    mappedLanguage = 'nl_NL'; // Default to Netherlands Dutch
+                }
+            } else {
+                mappedLanguage = 'nl_NL'; // Default to Netherlands Dutch
+            }
+        }
+        
+        // If not in map or undefined, default to English
+        if (!mappedLanguage) {
+            // Log unknown language for debugging
+            console.log(`⚠️  Unknown language code from franc: ${detectedCode}, defaulting to English`);
+            return 'en';
+        }
+        
+        return mappedLanguage;
+    } catch (error) {
+        // Fallback to English if franc throws an error
+        console.error(`Error in detectLanguage: ${error.message}`);
+        return 'en';
     }
-  
-    return lang;
-  }
+}
 
 /**
  * Get model path for a language
  * Returns { modelPath, language } or throws error if language not supported
  */
-async function getModelForLanguage(text, hintLang) {
+function getModelForLanguage(text, hintLang) {
     // if client explicitly requested a supported language, prefer it
     if (hintLang && PIPER_MODELS[hintLang]) {
       const mp = PIPER_MODELS[hintLang];
@@ -370,7 +454,7 @@ async function getModelForLanguage(text, hintLang) {
       return { modelPath: mp, language: hintLang };
     }
   
-    const language = await detectLanguage(text, hintLang);
+    const language = detectLanguage(text, hintLang);
     const modelPath = PIPER_MODELS[language];
   
     if (!modelPath) {
@@ -410,7 +494,7 @@ function runPiper(text, modelPath, outPath) {
 }
 
 async function generateAudioWithPiper(text, hintLang) {
-    const { modelPath, language } = await getModelForLanguage(text, hintLang);
+    const { modelPath, language } = getModelForLanguage(text, hintLang);
     const tempFilePath = path.join('/tmp', `piper_out_${Date.now()}_${Math.floor(Math.random()*1000)}.wav`);
   
     try {
@@ -436,7 +520,7 @@ app.post('/detect-language', async (req, res) => {
       if (!text || typeof text !== 'string') {
         return res.status(400).json({ error: 'Text is required' });
       }
-      const detectedLanguage = await detectLanguage(text, langHint);
+      const detectedLanguage = detectLanguage(text, langHint);
   
       const availableLanguages = Object.keys(PIPER_MODELS).filter(l => PIPER_MODELS[l]);
       const languageNames = { 
