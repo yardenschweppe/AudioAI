@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { franc } = require('franc-min');
 
 // Load .env file (if exists)
 const dotenvResult = require('dotenv').config();
@@ -300,146 +301,105 @@ function incrementGenerateCount(licenseKey, wpUserId = null) {
 }
 
 /**
- * Detect language from text using Unicode character ranges and language-specific patterns
- * Returns language code based on detected script and special characters
+ * Detect language from text using franc-min library (professional LID)
+ * Returns language code compatible with our Piper models
  * 
- * Unicode ranges:
- * - Hebrew: \u0590-\u05FF
- * - Arabic: \u0600-\u06FF
- * - Cyrillic (Russian, etc.): \u0400-\u04FF
- * - Greek: \u0370-\u03FF
- * - CJK (Chinese, Japanese, Korean): \u4E00-\u9FFF
- * - Latin/English/Spanish/Portuguese: detected by special characters
+ * franc-min returns ISO 639-3 codes, we map them to our language codes:
+ * - eng -> en
+ * - spa -> es
+ * - deu -> de
+ * - nld -> nl_NL (default to Netherlands Dutch)
+ * - por -> pt_BR (default to Brazilian Portuguese)
+ * - heb -> he
+ * - ara -> ar
+ * - rus -> ru
+ * - cmn/zho -> zh (Chinese)
+ * - jpn -> zh (Japanese, mapped to CJK)
+ * - kor -> zh (Korean, mapped to CJK)
  */
 function detectLanguage(text) {
-    // Remove whitespace and punctuation for detection
-    const cleanText = text.replace(/[\s\.,!?;:'"()\-_]/g, '');
+    // Remove excessive whitespace but keep some structure for better detection
+    const cleanText = text.trim().replace(/\s+/g, ' ');
     
-    if (cleanText.length === 0) {
-        return 'en'; // Default for empty or only punctuation
+    if (cleanText.length < 10) {
+        // Too short for reliable detection - default to English
+        return 'en';
     }
     
-    // Count characters by script
-    let hebrewCount = 0;
-    let arabicCount = 0;
-    let cyrillicCount = 0;
-    let greekCount = 0;
-    let cjkCount = 0;
-    let latinCount = 0;
-    
-    // Count language-specific characters for various languages
-    let spanishChars = 0; // ñ, á, é, í, ó, ú, ü
-    let portugueseChars = 0; // ç, á, é, í, ó, ú, â, ê, ô, ã, õ, ü
-    let germanChars = 0; // ä, ö, ü, ß
-    let dutchChars = 0; // ij (digraph), also counts ä, ö, ü, é, ë, ï
-    
-    for (let i = 0; i < cleanText.length; i++) {
-        const char = cleanText[i];
-        const code = char.charCodeAt(0);
-        const lowerChar = char.toLowerCase();
+    try {
+        // Use franc-min for language detection
+        // franc returns ISO 639-3 code (3 letters) or 'und' (undefined) if unsure
+        const detectedCode = franc(cleanText);
         
-        // Hebrew
-        if (code >= 0x0590 && code <= 0x05FF) {
-            hebrewCount++;
+        // franc may return 'und' (undefined) for very short or mixed text
+        if (!detectedCode || detectedCode === 'und') {
+            console.log(`⚠️  franc returned undefined/und for text, defaulting to English`);
+            return 'en';
         }
-        // Arabic
-        else if (code >= 0x0600 && code <= 0x06FF) {
-            arabicCount++;
-        }
-        // Cyrillic (Russian, Bulgarian, etc.)
-        else if (code >= 0x0400 && code <= 0x04FF) {
-            cyrillicCount++;
-        }
-        // Greek
-        else if (code >= 0x0370 && code <= 0x03FF) {
-            greekCount++;
-        }
-        // CJK (Chinese, Japanese, Korean)
-        else if (code >= 0x4E00 && code <= 0x9FFF) {
-            cjkCount++;
-        }
-        // Latin (English, Spanish, French, etc.) - ASCII and extended Latin
-        else if ((code >= 0x0020 && code <= 0x007F) || (code >= 0x00A0 && code <= 0x024F)) {
-            latinCount++;
+        
+        // Map franc ISO 639-3 codes to our language codes
+        const languageMap = {
+            // English variants
+            'eng': 'en',
             
-            // Check for Spanish-specific characters
-            if (lowerChar === 'ñ' || lowerChar === 'á' || lowerChar === 'é' || 
-                lowerChar === 'í' || lowerChar === 'ó' || lowerChar === 'ú' || lowerChar === 'ü') {
-                spanishChars++;
-            }
+            // Spanish
+            'spa': 'es',
             
-            // Check for Portuguese-specific characters
-            if (lowerChar === 'ç' || lowerChar === 'á' || lowerChar === 'é' || 
-                lowerChar === 'í' || lowerChar === 'ó' || lowerChar === 'ú' || 
-                lowerChar === 'â' || lowerChar === 'ê' || lowerChar === 'ô' || 
-                lowerChar === 'ã' || lowerChar === 'õ' || lowerChar === 'ü') {
-                portugueseChars++;
-            }
+            // German
+            'deu': 'de',
             
-            // Check for German-specific characters
-            if (lowerChar === 'ä' || lowerChar === 'ö' || lowerChar === 'ü' || lowerChar === 'ß') {
-                germanChars++;
-            }
+            // Dutch - default to Netherlands Dutch
+            'nld': 'nl_NL',
             
-            // Check for Dutch-specific characters (ij is common but hard to detect as single char)
-            // Also count some shared characters that are common in Dutch
-            if (lowerChar === 'ë' || lowerChar === 'ï' || lowerChar === 'é' || 
-                lowerChar === 'ä' || lowerChar === 'ö' || lowerChar === 'ü') {
-                dutchChars++;
-            }
+            // Portuguese - default to Brazilian Portuguese
+            'por': 'pt_BR',
+            
+            // Hebrew
+            'heb': 'he',
+            
+            // Arabic
+            'ara': 'ar',
+            
+            // Russian
+            'rus': 'ru',
+            
+            // Chinese - map to zh (CJK category)
+            'cmn': 'zh', // Mandarin Chinese
+            'zho': 'zh', // Chinese (generic)
+            
+            // Japanese - map to zh (CJK category)
+            'jpn': 'zh',
+            
+            // Korean - map to zh (CJK category)
+            'kor': 'zh',
+        };
+        
+        // Check if detected language is in our map
+        let mappedLanguage = languageMap[detectedCode];
+        
+        // If detected Portuguese, default to Brazilian (franc doesn't distinguish PT vs BR)
+        if (detectedCode === 'por') {
+            mappedLanguage = 'pt_BR'; // Default to Brazilian
         }
+        
+        // If detected Dutch, default to Netherlands Dutch (franc doesn't distinguish NL vs BE)
+        if (detectedCode === 'nld') {
+            mappedLanguage = 'nl_NL'; // Default to Netherlands Dutch
+        }
+        
+        // If not in map or undefined, default to English
+        if (!mappedLanguage) {
+            // Log unknown language for debugging
+            console.log(`⚠️  Unknown language code from franc: ${detectedCode}, defaulting to English`);
+            return 'en';
+        }
+        
+        return mappedLanguage;
+    } catch (error) {
+        // Fallback to English if franc throws an error
+        console.error(`Error in detectLanguage: ${error.message}`);
+        return 'en';
     }
-    
-    // Determine dominant script (with minimum threshold of 30%)
-    const totalChars = cleanText.length;
-    const threshold = totalChars * 0.3;
-    
-    if (hebrewCount >= threshold) {
-        return 'he';
-    }
-    if (arabicCount >= threshold) {
-        return 'ar'; // Arabic (not yet supported, but detected)
-    }
-    if (cyrillicCount >= threshold) {
-        return 'ru'; // Russian/Cyrillic (not yet supported, but detected)
-    }
-    if (cjkCount >= threshold) {
-        return 'zh'; // Chinese/Japanese/Korean (not yet supported, but detected)
-    }
-    
-    // For Latin script, check for language-specific indicators
-    // Use a lower threshold for language-specific characters (10% of text)
-    const langThreshold = totalChars * 0.1;
-    
-    // Check for German (ß is very distinctive, ä/ö/ü also common)
-    if (germanChars >= langThreshold) {
-        return 'de'; // German
-    }
-    
-    // Check for Dutch (ë, ï are more distinctive for Dutch, but also check for ij digraph)
-    // The "ij" digraph is very common in Dutch words
-    const ijPattern = /ij/gi;
-    const ijMatches = (text.match(ijPattern) || []).length;
-    // Also check for common Dutch words as additional indicator
-    const dutchWords = /\b(het|de|een|van|is|zijn|voor|op|met|dat|te|in|aan|hij|als|ook|er|maar|om|mijn|was|over|kan|waar|bij|niet|kunnen|haar|zij|dan|uit|naar|meer|welke|doen|zou|hier|nu|hoe|die|der|moet|na|dit|alleen|zoals|naar|hem|ons|bij|onder|tussen)\b/gi;
-    const dutchWordMatches = (text.match(dutchWords) || []).length;
-    
-    if ((dutchChars >= langThreshold && dutchChars > germanChars) || ijMatches >= 2 || dutchWordMatches >= 3) {
-        // Default to Netherlands Dutch (nl_NL), but could be Belgian Dutch (nl_BE)
-        // For now, prefer nl_NL; could be improved with word-based detection
-        return 'nl_NL'; // Dutch (default to Netherlands Dutch)
-    }
-    
-    // Check Romance languages
-    if (spanishChars >= langThreshold && spanishChars > portugueseChars) {
-        return 'es'; // Spanish
-    }
-    if (portugueseChars >= langThreshold) {
-        return 'pt_BR'; // Portuguese (default to Brazilian Portuguese)
-    }
-    
-    // Default to English (Latin script without special indicators)
-    return 'en';
 }
 
 /**
