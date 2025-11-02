@@ -228,7 +228,7 @@ jQuery(document).ready(function($) {
         
         statusDiv.show();
         statusDiv.css('border-left-color', '#2271b1'); // Blue for info
-        statusText.html('<span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span>Detecting language...');
+        statusText.text('Detecting language...');
         
         $.ajax({
             url: audioPressAI.ajaxUrl,
@@ -280,7 +280,7 @@ jQuery(document).ready(function($) {
         
         statusDiv.show();
         statusDiv.css('border-left-color', '#2271b1'); // Blue for info
-        statusText.html('<span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span>Detecting language...');
+        statusText.text('Detecting language...');
         
         $.ajax({
             url: audioPressAI.ajaxUrl,
@@ -393,7 +393,7 @@ jQuery(document).ready(function($) {
         // Show status
         statusDiv.show();
         statusDiv.css('border-left-color', '#2271b1'); // Blue for info
-        statusText.html('<span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span>' + audioPressAI.generating);
+        statusText.text(audioPressAI.generating);
         
         // Prepare data
         var ajaxData = {
