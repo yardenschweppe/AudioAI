@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { franc } = require('franc-min');
+const { franc } = require('franc');
 
 // Load .env file (if exists)
 const dotenvResult = require('dotenv').config();
@@ -301,27 +301,10 @@ function incrementGenerateCount(licenseKey, wpUserId = null) {
 }
 
 /**
- * Detect language from text using franc-min library (professional LID)
+ * Detect language from text using franc library (professional LID)
  * Returns language code compatible with our Piper models
  * 
- * franc-min returns ISO 639-3 codes, we map them to our language codes:
- * - eng -> en
- * - spa -> es
- * - deu -> de
- * - nld -> nl_NL (default to Netherlands Dutch)
- * - por -> pt_BR (default to Brazilian Portuguese)
- * - heb -> he
- * - ara -> ar
- * - rus -> ru
- * - cmn/zho -> zh (Chinese)
- * - jpn -> zh (Japanese, mapped to CJK)
- * - kor -> zh (Korean, mapped to CJK)
- */
-/**
- * Detect language from text using franc-min library (professional LID)
- * Returns language code compatible with our Piper models
- * 
- * franc-min returns ISO 639-3 codes, we map them to our language codes:
+ * franc returns ISO 639-3 codes, we map them to our language codes:
  * - eng -> en
  * - spa -> es
  * - deu -> de
@@ -348,7 +331,7 @@ function detectLanguage(text, hintLang) {
     }
     
     try {
-        // Use franc-min for language detection
+        // Use franc for language detection
         // franc returns ISO 639-3 code (3 letters) or 'und' (undefined) if unsure
         // franc is synchronous, no need for await
         const detectedCode = franc(cleanText, { minLength: 10 });
