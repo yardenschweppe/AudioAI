@@ -277,8 +277,8 @@ async function generateAudioWithPiper(text) {
         // 3. בניית הפקודה של Piper
         // אנו משתמשים ב-symlink הגלובלי שיצרנו
         // printf 'escaped_text' | piper --model /path/to/model.onnx --output_file /tmp/tempfile.wav
-        const command = `printf '${escapedText}' | /usr/local/bin/piper -m ${PIPER_MODEL_PATH} -f ${tempFilePath}`;
-
+        const PIPER_MODEL_PATH = "/opt/piper/voices/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx";
+const command = `printf '${escapedText}' | /usr/local/bin/piper -m ${PIPER_MODEL_PATH} -f ${tempFilePath}`;
         // 4. הרצת הפקודה עם timeout (60 seconds max)
         const execOptions = {
             maxBuffer: 10 * 1024 * 1024, // 10MB max output
