@@ -30,13 +30,17 @@ const FREEMIUS_PUBLIC_KEY = process.env.FREEMIUS_PUBLIC_KEY || 'pk_c1f4731e093f2
 const FREEMIUS_SECRET_KEY = process.env.FREEMIUS_SECRET_KEY || 'sk_0MMUBME@.WS)<IG1GLBsW(~w<0b)X';
 const FREEMIUS_PLUGIN_ID = process.env.FREEMIUS_PLUGIN_ID || 21493;
 // Piper model paths by language
-// ניתן להגדיר ב-.env: PIPER_MODEL_EN, PIPER_MODEL_HE, etc.
+// ניתן להגדיר ב-.env: PIPER_MODEL_EN, PIPER_MODEL_ES, PIPER_MODEL_PT_PT, PIPER_MODEL_PT_BR, etc.
 const PIPER_MODELS = {
     'en': process.env.PIPER_MODEL_EN || '/opt/piper/voices/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx',
-    'he': process.env.PIPER_MODEL_HE || null, // עברית - לא מותקן כרגע
-    // ניתן להוסיף שפות נוספות:
-    // 'ar': process.env.PIPER_MODEL_AR || null,
-    // 'es': process.env.PIPER_MODEL_ES || null,
+    'es': process.env.PIPER_MODEL_ES || '/opt/piper/voices/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx',
+    'pt_PT': process.env.PIPER_MODEL_PT_PT || '/opt/piper/voices/pt/pt_PT/tugao/medium/pt_PT-tugao-medium.onnx',
+    'pt_BR': process.env.PIPER_MODEL_PT_BR || '/opt/piper/voices/pt/pt_BR/cadu/medium/pt_BR-cadu-medium.onnx',
+    // מודלים נוספים (לא מותקנים כרגע):
+    'he': process.env.PIPER_MODEL_HE || null, // עברית
+    'ar': process.env.PIPER_MODEL_AR || null, // ערבית
+    'ru': process.env.PIPER_MODEL_RU || null, // רוסית
+    'zh': process.env.PIPER_MODEL_ZH || null, // סינית/יפנית/קוריאנית
 };
 
 const PIPER_BIN = process.env.PIPER_BIN || '/opt/piper/.venv/bin/piper'; // נתיב אבסולוטי
@@ -62,7 +66,16 @@ if (TEST_MODE) {
 
 // Display supported languages
 console.log('\n🌍 Supported Languages:');
-const languageNames = { 'en': 'English', 'he': 'עברית (Hebrew)' };
+const languageNames = { 
+    'en': 'English', 
+    'es': 'Español (Spanish)',
+    'pt_PT': 'Português PT (Portuguese Portugal)',
+    'pt_BR': 'Português BR (Portuguese Brazil)',
+    'he': 'עברית (Hebrew)', 
+    'ar': 'ערבית (Arabic)',
+    'ru': 'Русский (Russian)',
+    'zh': '中文/日本語/한국어 (CJK)'
+};
 for (const [lang, modelPath] of Object.entries(PIPER_MODELS)) {
     if (modelPath && fs.existsSync(modelPath)) {
         console.log(`   ✅ ${languageNames[lang] || lang}: ${modelPath}`);
@@ -281,16 +294,111 @@ function incrementGenerateCount(licenseKey, wpUserId = null) {
 }
 
 /**
- * Detect language from text (simple heuristic)
- * Returns language code: 'he' for Hebrew, 'en' for English/default
+ * Detect language from text using Unicode character ranges and language-specific patterns
+ * Returns language code based on detected script and special characters
+ * 
+ * Unicode ranges:
+ * - Hebrew: \u0590-\u05FF
+ * - Arabic: \u0600-\u06FF
+ * - Cyrillic (Russian, etc.): \u0400-\u04FF
+ * - Greek: \u0370-\u03FF
+ * - CJK (Chinese, Japanese, Korean): \u4E00-\u9FFF
+ * - Latin/English/Spanish/Portuguese: detected by special characters
  */
 function detectLanguage(text) {
-    // Check for Hebrew characters (Unicode range: \u0590-\u05FF)
-    const hebrewRegex = /[\u0590-\u05FF]/;
-    if (hebrewRegex.test(text)) {
+    // Remove whitespace and punctuation for detection
+    const cleanText = text.replace(/[\s\.,!?;:'"()\-_]/g, '');
+    
+    if (cleanText.length === 0) {
+        return 'en'; // Default for empty or only punctuation
+    }
+    
+    // Count characters by script
+    let hebrewCount = 0;
+    let arabicCount = 0;
+    let cyrillicCount = 0;
+    let greekCount = 0;
+    let cjkCount = 0;
+    let latinCount = 0;
+    
+    // Count language-specific characters for Romance languages
+    let spanishChars = 0; // ñ, á, é, í, ó, ú, ü
+    let portugueseChars = 0; // ç, á, é, í, ó, ú, â, ê, ô, ã, õ, ü
+    
+    for (let i = 0; i < cleanText.length; i++) {
+        const char = cleanText[i];
+        const code = char.charCodeAt(0);
+        const lowerChar = char.toLowerCase();
+        
+        // Hebrew
+        if (code >= 0x0590 && code <= 0x05FF) {
+            hebrewCount++;
+        }
+        // Arabic
+        else if (code >= 0x0600 && code <= 0x06FF) {
+            arabicCount++;
+        }
+        // Cyrillic (Russian, Bulgarian, etc.)
+        else if (code >= 0x0400 && code <= 0x04FF) {
+            cyrillicCount++;
+        }
+        // Greek
+        else if (code >= 0x0370 && code <= 0x03FF) {
+            greekCount++;
+        }
+        // CJK (Chinese, Japanese, Korean)
+        else if (code >= 0x4E00 && code <= 0x9FFF) {
+            cjkCount++;
+        }
+        // Latin (English, Spanish, French, etc.) - ASCII and extended Latin
+        else if ((code >= 0x0020 && code <= 0x007F) || (code >= 0x00A0 && code <= 0x024F)) {
+            latinCount++;
+            
+            // Check for Spanish-specific characters
+            if (lowerChar === 'ñ' || lowerChar === 'á' || lowerChar === 'é' || 
+                lowerChar === 'í' || lowerChar === 'ó' || lowerChar === 'ú' || lowerChar === 'ü') {
+                spanishChars++;
+            }
+            
+            // Check for Portuguese-specific characters
+            if (lowerChar === 'ç' || lowerChar === 'á' || lowerChar === 'é' || 
+                lowerChar === 'í' || lowerChar === 'ó' || lowerChar === 'ú' || 
+                lowerChar === 'â' || lowerChar === 'ê' || lowerChar === 'ô' || 
+                lowerChar === 'ã' || lowerChar === 'õ' || lowerChar === 'ü') {
+                portugueseChars++;
+            }
+        }
+    }
+    
+    // Determine dominant script (with minimum threshold of 30%)
+    const totalChars = cleanText.length;
+    const threshold = totalChars * 0.3;
+    
+    if (hebrewCount >= threshold) {
         return 'he';
     }
-    // Default to English
+    if (arabicCount >= threshold) {
+        return 'ar'; // Arabic (not yet supported, but detected)
+    }
+    if (cyrillicCount >= threshold) {
+        return 'ru'; // Russian/Cyrillic (not yet supported, but detected)
+    }
+    if (cjkCount >= threshold) {
+        return 'zh'; // Chinese/Japanese/Korean (not yet supported, but detected)
+    }
+    
+    // For Latin script, check for Romance language indicators
+    // Use a lower threshold for language-specific characters (10% of text)
+    const langThreshold = totalChars * 0.1;
+    
+    if (spanishChars >= langThreshold && spanishChars > portugueseChars) {
+        return 'es'; // Spanish
+    }
+    if (portugueseChars >= langThreshold) {
+        return 'pt_BR'; // Portuguese (default to Brazilian Portuguese)
+    }
+    
+    // Default to English (Latin script without special indicators)
     return 'en';
 }
 
@@ -304,10 +412,17 @@ function getModelForLanguage(language) {
     if (!modelPath) {
         const languageNames = {
             'en': 'אנגלית',
+            'es': 'ספרדית',
+            'pt_PT': 'פורטוגזית (פורטוגל)',
+            'pt_BR': 'פורטוגזית (ברזיל)',
             'he': 'עברית',
+            'ar': 'ערבית',
+            'ru': 'רוסית',
+            'zh': 'סינית/יפנית/קוריאנית',
         };
         const langName = languageNames[language] || language;
-        throw new Error(`מודל ${langName} לא מותקן או לא מוגדר בשרת. כרגע תומך רק באנגלית.`);
+        const supportedLangs = Object.keys(PIPER_MODELS).filter(lang => PIPER_MODELS[lang] !== null).join(', ');
+        throw new Error(`מודל ${langName} לא מותקן או לא מוגדר בשרת. השפות הנתמכות כרגע: ${supportedLangs || 'אנגלית בלבד'}.`);
     }
     
     // Verify model file exists
