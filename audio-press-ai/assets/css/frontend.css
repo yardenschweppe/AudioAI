@@ -1,30 +1,18 @@
-/* Modern Custom Audio Player for Frontend */
+/* Modern Custom Audio Player for Frontend - Compact Version */
 .audio-press-ai-player-wrapper {
-    margin: 30px auto;
-    padding: 20px;
+    margin: 15px 0;
+    padding: 10px 12px;
     max-width: 100%;
     width: 100%;
-    background: #ffffff;
+    background: #f8f8f8;
     border: 1px solid #e0e0e0;
-    border-radius: 12px;
-    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+    border-radius: 6px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
     text-align: left;
 }
 
 .audio-press-ai-player-wrapper .audio-label {
-    display: block;
-    color: #333;
-    font-size: 14px;
-    font-weight: 600;
-    margin-bottom: 16px;
-    letter-spacing: 0.2px;
-}
-
-.audio-press-ai-player-wrapper .audio-label::before {
-    content: '🎧';
-    margin-right: 8px;
-    font-size: 16px;
-    vertical-align: middle;
+    display: none; /* Hide label in frontend for compact design */
 }
 
 .audio-press-ai-custom-player {
@@ -36,13 +24,13 @@
 .audio-press-ai-custom-player .player-controls {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 10px;
     margin-bottom: 0;
 }
 
 .audio-press-ai-custom-player .play-pause-btn {
-    width: 56px;
-    height: 56px;
+    width: 36px;
+    height: 36px;
     border-radius: 50%;
     border: none;
     background: #2c2c2c;
@@ -52,16 +40,16 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    transition: all 0.3s ease;
-    font-size: 20px;
+    transition: all 0.2s ease;
+    font-size: 14px;
     padding: 0;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .audio-press-ai-custom-player .play-pause-btn:hover {
-    transform: scale(1.1);
+    transform: scale(1.08);
     background: #1a1a1a;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
 }
 
 .audio-press-ai-custom-player .play-pause-btn:active {
@@ -71,14 +59,14 @@
 .audio-press-ai-custom-player .play-pause-btn.paused::before {
     content: "▶";
     display: block;
-    margin-left: 3px;
+    margin-left: 2px;
 }
 
 .audio-press-ai-custom-player .play-pause-btn.playing::before {
     content: "❚❚";
     display: block;
-    font-size: 18px;
-    letter-spacing: -3px;
+    font-size: 12px;
+    letter-spacing: -2px;
 }
 
 .audio-press-ai-custom-player .player-info {
@@ -89,29 +77,29 @@
 .audio-press-ai-custom-player .progress-container {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 8px;
+    gap: 8px;
+    margin-bottom: 4px;
 }
 
 .audio-press-ai-custom-player .progress-bar-wrapper {
     flex: 1;
-    height: 8px;
-    background: #e8e8e8;
-    border-radius: 4px;
+    height: 5px;
+    background: #e0e0e0;
+    border-radius: 3px;
     cursor: pointer;
     position: relative;
     overflow: hidden;
-    transition: height 0.2s ease;
+    transition: height 0.15s ease;
 }
 
 .audio-press-ai-custom-player .progress-bar-wrapper:hover {
-    height: 10px;
+    height: 6px;
 }
 
 .audio-press-ai-custom-player .progress-bar {
     height: 100%;
     background: #2c2c2c;
-    border-radius: 4px;
+    border-radius: 3px;
     transition: width 0.1s linear;
     width: 0%;
 }
@@ -124,16 +112,16 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 13px;
+    font-size: 11px;
     color: #666;
     font-weight: 500;
-    margin-top: 6px;
+    margin-top: 3px;
 }
 
 .audio-press-ai-custom-player .time-current,
 .audio-press-ai-custom-player .time-total {
     font-variant-numeric: tabular-nums;
-    min-width: 50px;
+    min-width: 38px;
 }
 
 .audio-press-ai-custom-player .time-current {
@@ -142,7 +130,7 @@
 }
 
 .audio-press-ai-custom-player .time-separator {
-    margin: 0 6px;
+    margin: 0 4px;
     color: #999;
 }
 
@@ -154,40 +142,39 @@
 /* Responsive design */
 @media (max-width: 768px) {
     .audio-press-ai-player-wrapper {
-        margin: 20px auto;
-        padding: 16px;
-        border-radius: 10px;
-    }
-    
-    .audio-press-ai-player-wrapper .audio-label {
-        font-size: 13px;
-        margin-bottom: 14px;
+        margin: 12px 0;
+        padding: 8px 10px;
+        border-radius: 5px;
     }
     
     .audio-press-ai-custom-player .play-pause-btn {
-        width: 50px;
-        height: 50px;
-        font-size: 18px;
+        width: 32px;
+        height: 32px;
+        font-size: 12px;
     }
     
     .audio-press-ai-custom-player .time-display {
-        font-size: 12px;
+        font-size: 10px;
     }
 }
 
 @media (max-width: 480px) {
     .audio-press-ai-player-wrapper {
-        padding: 14px;
-        margin: 15px auto;
+        padding: 8px;
+        margin: 10px 0;
     }
     
     .audio-press-ai-custom-player .play-pause-btn {
-        width: 48px;
-        height: 48px;
-        font-size: 16px;
+        width: 30px;
+        height: 30px;
+        font-size: 11px;
     }
     
     .audio-press-ai-custom-player .player-controls {
-        gap: 12px;
+        gap: 8px;
+    }
+    
+    .audio-press-ai-custom-player .time-display {
+        font-size: 9px;
     }
 }
