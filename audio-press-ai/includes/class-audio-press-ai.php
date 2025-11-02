@@ -115,9 +115,9 @@ class Audio_Press_AI {
         }
         
         if ($freemius_available) {
-            // Freemius handles the main menu, so we add a submenu
+            // Freemius handles the main menu with slug 'audioai', so we add a submenu
             add_submenu_page(
-                'audio-press-ai',
+                'audioai',  // Parent menu slug - חייב להתאים ל-slug ב-Freemius
                 __('Settings', 'audio-press-ai'),
                 __('Settings', 'audio-press-ai'),
                 'manage_options',
@@ -130,13 +130,13 @@ class Audio_Press_AI {
                 __('Audio-Press AI', 'audio-press-ai'),
                 __('Audio-Press AI', 'audio-press-ai'),
                 'manage_options',
-                'audio-press-ai',
+                'audioai',  // שונה ל-audioai כדי להיות תואם ל-Freemius
                 array($this, 'render_settings_page'),
                 'dashicons-controls-volumeon',
                 30
             );
             add_submenu_page(
-                'audio-press-ai',
+                'audioai',  // שונה ל-audioai כדי להיות תואם ל-Freemius
                 __('Settings', 'audio-press-ai'),
                 __('Settings', 'audio-press-ai'),
                 'manage_options',

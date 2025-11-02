@@ -16,6 +16,63 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+// === Freemius SDK Bootstrap ===
+if ( ! function_exists( 'audioai_fs' ) ) {
+    function audioai_fs() {
+        global $audioai_fs;
+
+        if ( ! isset( $audioai_fs ) ) {
+            // ודא שהתיקייה freemius עם start.php קיימת בשורש התוסף
+            $freemius_file = dirname( __FILE__ ) . '/freemius/start.php';
+            
+      
+            
+            if ( file_exists( $freemius_file ) ) {
+                require_once $freemius_file;
+
+                $audioai_fs = fs_dynamic_init( array(
+                    'id'                  => '21493',              // מספר Product ID מ-Freemius Dashboard
+                    'slug'                => 'audioai',            // slug של התוסף (חייב להתאים ל-slug ב-Freemius Dashboard)
+                    'type'                => 'plugin',
+                    'public_key'          => 'pk_c1f4731e093f2279f624161d5ee8b',  // Public Key מ-Freemius Dashboard
+                    'is_premium'          => false,                 // false = יש גרסה חינמית (Free Plan)
+                    'has_premium_version' => true,                 // true = יש גם גרסה בתשלום (Premium Plan)
+                    'has_addons'          => false,
+                    'has_paid_plans'      => true,                 // true = יש תוכניות בתשלום
+                    'menu'                => array(
+                        'slug'           => 'audioai',  // חייב להתאים ל-slug ב-Freemius Dashboard
+                        'account'        => false,  // הסתר Account
+                        'contact'        => true,   // הצג Contact Us
+                        'support'        => false,  // הסתר wp.org Support Forum
+                    ),
+                ) );
+            } else {
+                // Freemius SDK not found - return dummy object
+                $audioai_fs = new class {
+                    public function is_paying() { return false; }
+                    public function _get_license() { return false; }
+                    public function has_menu() { return false; }
+                    public function get_upgrade_url() { return '#'; }
+                };
+            }
+        }
+
+        return $audioai_fs;
+    }
+
+    // אתחול ה-SDK + hook לטעינה
+    audioai_fs();
+    do_action( 'audioai_fs_loaded' );
+    
+    // Alias for backward compatibility with existing code
+    if ( ! function_exists( 'apai_fs' ) ) {
+        function apai_fs() {
+            return audioai_fs();
+        }
+    }
+}
+// === /Freemius SDK Bootstrap ===
+
 // Define plugin constants
 define('AUDIO_PRESS_AI_VERSION', '1.0.0');
 define('AUDIO_PRESS_AI_PLUGIN_DIR', plugin_dir_path(__FILE__));
@@ -79,106 +136,8 @@ if (!defined('AUDIO_PRESS_AI_FREEMIUS_ENABLED') || !AUDIO_PRESS_AI_FREEMIUS_ENAB
     });
 }
 
-// Freemius SDK integration
-if (!function_exists('apai_fs')) {
-    // Create a helper function for easy access to the Freemius SDK instance.
-    function apai_fs() {
-        global $apai_fs;
-
-        if (!isset($apai_fs)) {
-            // Check if Freemius is enabled
-            if (!defined('AUDIO_PRESS_AI_FREEMIUS_ENABLED') || !AUDIO_PRESS_AI_FREEMIUS_ENABLED) {
-                // Freemius is disabled - return dummy object to prevent errors
-                $apai_fs = new class {
-                    public function is_paying() {
-                        return false;
-                    }
-                    public function _get_license() {
-                        return false;
-                    }
-                    public function has_menu() {
-                        return false;
-                    }
-                    public function get_upgrade_url() {
-                        return '#';
-                    }
-                };
-                return $apai_fs;
-            }
-            
-            // Freemius is enabled - proceed with initialization
-            // Check if Freemius SDK exists before including
-            $freemius_file = dirname(__FILE__) . '/wordpress-sdk-master/start.php';
-            
-            if (file_exists($freemius_file)) {
-                // Include Freemius SDK.
-                require_once $freemius_file;
-
-                $apai_fs = fs_dynamic_init(array(
-                    'id'                  => '21493', // Plugin ID מ-Freemius
-                    'slug'                => 'audio-press-ai',
-                    'type'                => 'plugin',
-                    'public_key'          => 'pk_c1f4731e093f2279f624161d5ee8b', // Public Key מ-Freemius
-                    'is_premium'          => true,
-                    'premium_suffix'      => 'Pro',
-                    'has_premium_version' => true,
-                    'has_addons'          => false,
-                    'has_paid_plans'      => true,
-                    'trial'               => array(
-                        'days'               => 7,
-                        'is_require_payment' => false,
-                    ),
-                    'menu'                => array(
-                        'slug'           => 'audio-press-ai',
-                        'first-path'     => 'admin.php?page=audio-press-ai',
-                        'account'        => false,
-                        'contact'        => false,
-                        'support'        => false,
-                    ),
-                ));
-            } else {
-                // Freemius SDK not found - return dummy object to prevent errors
-                // Create a class to mimic Freemius interface with methods
-                $apai_fs = new class {
-                    public function is_paying() {
-                        return false;
-                    }
-                    public function _get_license() {
-                        return false;
-                    }
-                    public function has_menu() {
-                        return false;
-                    }
-                    public function get_upgrade_url() {
-                        return '#';
-                    }
-                };
-                
-                // Show admin notice if we're in admin (only once)
-                static $notice_shown = false;
-                if (is_admin() && !$notice_shown) {
-                    $notice_shown = true;
-                    add_action('admin_notices', function() {
-                        if (current_user_can('manage_options')) {
-                            echo '<div class="notice notice-error"><p><strong>Audio-Press AI:</strong> Freemius SDK not found. Please download and install the Freemius SDK in the <code>wordpress-sdk-master</code> directory. <a href="https://github.com/Freemius/wordpress-sdk" target="_blank">Download SDK</a></p></div>';
-                        }
-                    });
-                }
-            }
-        }
-
-        return $apai_fs;
-    }
-
-    // Init Freemius (only if enabled and SDK exists).
-    // If Freemius is disabled, apai_fs() will return a dummy object
-    apai_fs();
-    
-    // Signal that SDK was initiated (only if Freemius is actually enabled)
-    if (defined('AUDIO_PRESS_AI_FREEMIUS_ENABLED') && AUDIO_PRESS_AI_FREEMIUS_ENABLED) {
-        do_action('apai_fs_loaded');
-    }
-}
+// Note: Freemius SDK is now initialized above using audioai_fs()
+// The apai_fs() function is an alias for backward compatibility
 
 // Include required files
 require_once AUDIO_PRESS_AI_PLUGIN_DIR . 'includes/class-audio-press-ai.php';

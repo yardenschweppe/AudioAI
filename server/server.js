@@ -78,6 +78,7 @@ const DB_CONFIG = {
 };
 
 const DB_TABLE_NAME = process.env.DB_TABLE_NAME || 'audio_press_usage';
+const DB_LICENSES_TABLE = process.env.DB_LICENSES_TABLE || 'audio_press_licenses';
 let dbConnection = null;
 let dbPool = null;
 
@@ -201,8 +202,8 @@ async function initDatabase() {
             throw dbError;
         }
 
-        // Create table if it doesn't exist
-        const createTableSQL = `
+        // Create usage table if it doesn't exist
+        const createUsageTableSQL = `
             CREATE TABLE IF NOT EXISTS \`${DB_TABLE_NAME}\` (
                 \`id\` INT AUTO_INCREMENT PRIMARY KEY,
                 \`license_key\` VARCHAR(255) NOT NULL,
@@ -220,8 +221,28 @@ async function initDatabase() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         `;
         
-        await dbPool.query(createTableSQL);
-        console.log(`✅ Database initialized: ${DB_CONFIG.database}.${DB_TABLE_NAME}`);
+        // Create licenses table if it doesn't exist (stores license info from Freemius)
+        const createLicensesTableSQL = `
+            CREATE TABLE IF NOT EXISTS \`${DB_LICENSES_TABLE}\` (
+                \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+                \`license_key\` VARCHAR(255) NOT NULL UNIQUE,
+                \`plan\` VARCHAR(50) DEFAULT NULL,
+                \`is_active\` BOOLEAN DEFAULT TRUE,
+                \`expires_at\` DATETIME DEFAULT NULL,
+                \`freemius_user_id\` BIGINT DEFAULT NULL,
+                \`freemius_license_id\` BIGINT DEFAULT NULL,
+                \`validated_at\` TIMESTAMP NULL DEFAULT NULL,
+                \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                \`updated_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                KEY \`idx_license_key\` (\`license_key\`),
+                KEY \`idx_is_active\` (\`is_active\`),
+                KEY \`idx_plan\` (\`plan\`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `;
+        
+        await dbPool.query(createUsageTableSQL);
+        await dbPool.query(createLicensesTableSQL);
+        console.log(`✅ Database initialized: ${DB_CONFIG.database}.${DB_TABLE_NAME} and ${DB_LICENSES_TABLE}`);
         return true;
     } catch (error) {
         console.error('⚠️  Database initialization failed:', error.message);
@@ -297,6 +318,82 @@ async function saveUsageToDB(licenseKey, usage) {
     } catch (error) {
         console.error('Error saving usage to DB:', error.message);
         return false;
+    }
+}
+
+/**
+ * Save or update license information from Freemius validation
+ */
+async function saveLicenseToDB(licenseKey, validation) {
+    if (!dbPool || !validation?.license) return false;
+    
+    try {
+        const license = validation.license;
+        const plan = resolvePlan(validation);
+        const expiresAt = license.expiration ? new Date(license.expiration * 1000) : null;
+        
+        await dbPool.query(
+            `INSERT INTO \`${DB_LICENSES_TABLE}\` 
+             (license_key, plan, is_active, expires_at, freemius_user_id, freemius_license_id, validated_at)
+             VALUES (?, ?, ?, ?, ?, ?, NOW())
+             ON DUPLICATE KEY UPDATE
+             plan = VALUES(plan),
+             is_active = VALUES(is_active),
+             expires_at = VALUES(expires_at),
+             freemius_user_id = VALUES(freemius_user_id),
+             freemius_license_id = VALUES(freemius_license_id),
+             validated_at = NOW()`,
+            [
+                licenseKey,
+                plan,
+                license.is_active || false,
+                expiresAt,
+                license.user_id || null,
+                license.id || null
+            ]
+        );
+        return true;
+    } catch (error) {
+        console.error('Error saving license to DB:', error.message);
+        return false;
+    }
+}
+
+/**
+ * Load license from database (cache, but still validate with Freemius periodically)
+ */
+async function loadLicenseFromDB(licenseKey) {
+    if (!dbPool) return null;
+    
+    try {
+        const [rows] = await dbPool.query(
+            `SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key = ?`,
+            [licenseKey]
+        );
+        
+        if (rows.length === 0) return null;
+        
+        const row = rows[0];
+        // If license was validated more than 24 hours ago, return null to force re-validation
+        const lastValidated = row.validated_at ? new Date(row.validated_at) : null;
+        const hoursSinceValidation = lastValidated ? (Date.now() - lastValidated.getTime()) / (1000 * 60 * 60) : Infinity;
+        
+        if (hoursSinceValidation > 24) {
+            return null; // Force re-validation
+        }
+        
+        return {
+            license_key: row.license_key,
+            plan: row.plan,
+            is_active: row.is_active,
+            expires_at: row.expires_at,
+            freemius_user_id: row.freemius_user_id,
+            freemius_license_id: row.freemius_license_id,
+            validated_at: row.validated_at
+        };
+    } catch (error) {
+        console.error('Error loading license from DB:', error.message);
+        return null;
     }
 }
 
@@ -882,13 +979,35 @@ app.post('/generate', async (req, res) => {
                 license: { is_active: true, test_mode: true }
             };
         } else {
-            console.log(`Validating license: ${license_key.substring(0, 8)}...`);
-            validation = await validateFreemiusLicense(license_key);
+            // Try to load from cache first (validated within last 24 hours)
+            const cachedLicense = await loadLicenseFromDB(license_key);
             
-            if (!validation.valid) {
-                return res.status(403).json({
-                    error: validation.error || 'Invalid or expired license'
-                });
+            if (cachedLicense && cachedLicense.is_active) {
+                // Use cached license info
+                validation = {
+                    valid: true,
+                    license: {
+                        is_active: cachedLicense.is_active,
+                        plan: { name: cachedLicense.plan },
+                        expiration: cachedLicense.expires_at ? Math.floor(new Date(cachedLicense.expires_at).getTime() / 1000) : null,
+                        user_id: cachedLicense.freemius_user_id,
+                        id: cachedLicense.freemius_license_id
+                    }
+                };
+                console.log(`Using cached license for: ${license_key.substring(0, 8)}... (plan: ${cachedLicense.plan})`);
+            } else {
+                // Validate with Freemius API
+                console.log(`Validating license: ${license_key.substring(0, 8)}...`);
+                validation = await validateFreemiusLicense(license_key);
+                
+                if (!validation.valid) {
+                    return res.status(403).json({
+                        error: validation.error || 'Invalid or expired license'
+                    });
+                }
+                
+                // Save license info to database for caching and future queries
+                await saveLicenseToDB(license_key, validation);
             }
         }
         
@@ -1131,12 +1250,29 @@ app.post('/usage', async (req, res) => {
                 license: { is_active: true, test_mode: true }
             };
         } else {
-            validation = await validateFreemiusLicense(license_key);
+            // Try to load from cache first
+            const cachedLicense = await loadLicenseFromDB(license_key);
             
-            if (!validation.valid) {
-                return res.status(403).json({
-                    error: 'Invalid or expired license'
-                });
+            if (cachedLicense && cachedLicense.is_active) {
+                validation = {
+                    valid: true,
+                    license: {
+                        is_active: cachedLicense.is_active,
+                        plan: { name: cachedLicense.plan },
+                        expiration: cachedLicense.expires_at ? Math.floor(new Date(cachedLicense.expires_at).getTime() / 1000) : null
+                    }
+                };
+            } else {
+                validation = await validateFreemiusLicense(license_key);
+                
+                if (!validation.valid) {
+                    return res.status(403).json({
+                        error: 'Invalid or expired license'
+                    });
+                }
+                
+                // Save license info to database
+                await saveLicenseToDB(license_key, validation);
             }
         }
         
