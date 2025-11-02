@@ -242,6 +242,10 @@ async function initDatabase() {
         
         await dbPool.query(createUsageTableSQL);
         await dbPool.query(createLicensesTableSQL);
+        
+        // Migrate/update tables - add missing columns if needed
+        await migrateTables();
+        
         console.log(`✅ Database initialized: ${DB_CONFIG.database}.${DB_TABLE_NAME} and ${DB_LICENSES_TABLE}`);
         return true;
     } catch (error) {
@@ -253,6 +257,136 @@ async function initDatabase() {
             dbPool = null;
         }
         return false;
+    }
+}
+
+/**
+ * Migrate tables - add missing columns if needed
+ */
+async function migrateTables() {
+    if (!dbPool) return;
+    
+    try {
+        // Check usage table columns
+        const [usageColumns] = await dbPool.query(`SHOW COLUMNS FROM \`${DB_TABLE_NAME}\``);
+        const usageColumnNames = usageColumns.map(col => col.Field);
+        
+        // Expected columns for usage table
+        const expectedUsageColumns = {
+            'id': 'INT AUTO_INCREMENT PRIMARY KEY',
+            'license_key': 'VARCHAR(255) NOT NULL',
+            'month': 'VARCHAR(7) NOT NULL',
+            'posts_used': 'JSON NOT NULL',
+            'trial_post_id': 'VARCHAR(255) DEFAULT NULL',
+            'generate_count': 'INT DEFAULT 0',
+            'chars_used': 'BIGINT DEFAULT 0',
+            'plan': 'VARCHAR(50) DEFAULT NULL',
+            'created_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+            'updated_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'
+        };
+        
+        // Add missing columns to usage table
+        for (const [columnName, columnDef] of Object.entries(expectedUsageColumns)) {
+            if (!usageColumnNames.includes(columnName)) {
+                try {
+                    // Skip PRIMARY KEY for existing table
+                    const cleanDef = columnDef.replace('AUTO_INCREMENT PRIMARY KEY', 'AUTO_INCREMENT');
+                    await dbPool.query(`ALTER TABLE \`${DB_TABLE_NAME}\` ADD COLUMN \`${columnName}\` ${cleanDef}`);
+                    console.log(`   ✅ Added missing column '${columnName}' to ${DB_TABLE_NAME}`);
+                } catch (alterError) {
+                    // Column might have been added by another process, or there's a syntax issue
+                    console.log(`   ⚠️  Could not add column '${columnName}': ${alterError.message}`);
+                }
+            }
+        }
+        
+        // Check and add indexes for usage table if missing
+        const [usageIndexes] = await dbPool.query(`SHOW INDEXES FROM \`${DB_TABLE_NAME}\``);
+        const usageIndexNames = usageIndexes.map(idx => idx.Key_name);
+        
+        // Add unique index for license_month if missing
+        if (!usageIndexNames.includes('license_month')) {
+            try {
+                await dbPool.query(`ALTER TABLE \`${DB_TABLE_NAME}\` ADD UNIQUE KEY \`license_month\` (\`license_key\`, \`month\`)`);
+                console.log(`   ✅ Added unique index 'license_month' to ${DB_TABLE_NAME}`);
+            } catch (idxError) {
+                // Index might already exist
+                if (!idxError.message.includes('Duplicate key')) {
+                    console.log(`   ⚠️  Could not add index 'license_month': ${idxError.message}`);
+                }
+            }
+        }
+        
+        // Check licenses table columns
+        const [licenseColumns] = await dbPool.query(`SHOW COLUMNS FROM \`${DB_LICENSES_TABLE}\``);
+        const licenseColumnNames = licenseColumns.map(col => col.Field);
+        
+        // Expected columns for licenses table
+        const expectedLicenseColumns = {
+            'id': 'INT AUTO_INCREMENT PRIMARY KEY',
+            'license_key': 'VARCHAR(255) NOT NULL UNIQUE',
+            'plan': 'VARCHAR(50) DEFAULT NULL',
+            'is_active': 'BOOLEAN DEFAULT TRUE',
+            'expires_at': 'DATETIME DEFAULT NULL',
+            'freemius_user_id': 'BIGINT DEFAULT NULL',
+            'freemius_license_id': 'BIGINT DEFAULT NULL',
+            'validated_at': 'TIMESTAMP NULL DEFAULT NULL',
+            'created_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+            'updated_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'
+        };
+        
+        // Add missing columns to licenses table
+        for (const [columnName, columnDef] of Object.entries(expectedLicenseColumns)) {
+            if (!licenseColumnNames.includes(columnName)) {
+                try {
+                    // Skip PRIMARY KEY for existing table
+                    const cleanDef = columnDef.replace('AUTO_INCREMENT PRIMARY KEY', 'AUTO_INCREMENT').replace(' UNIQUE', '');
+                    await dbPool.query(`ALTER TABLE \`${DB_LICENSES_TABLE}\` ADD COLUMN \`${columnName}\` ${cleanDef}`);
+                    console.log(`   ✅ Added missing column '${columnName}' to ${DB_LICENSES_TABLE}`);
+                    
+                    // Add UNIQUE constraint separately if needed
+                    if (columnDef.includes('UNIQUE') && columnName === 'license_key') {
+                        try {
+                            await dbPool.query(`ALTER TABLE \`${DB_LICENSES_TABLE}\` ADD UNIQUE KEY \`license_key\` (\`license_key\`)`);
+                        } catch (uniqError) {
+                            // Unique might already exist
+                        }
+                    }
+                } catch (alterError) {
+                    // Column might have been added by another process
+                    console.log(`   ⚠️  Could not add column '${columnName}': ${alterError.message}`);
+                }
+            }
+        }
+        
+        // Check and add indexes for licenses table if missing
+        const [licenseIndexes] = await dbPool.query(`SHOW INDEXES FROM \`${DB_LICENSES_TABLE}\``);
+        const licenseIndexNames = licenseIndexes.map(idx => idx.Key_name);
+        
+        // Add indexes if missing
+        const indexesToAdd = [
+            { name: 'idx_license_key', sql: 'KEY `idx_license_key` (`license_key`)' },
+            { name: 'idx_is_active', sql: 'KEY `idx_is_active` (`is_active`)' },
+            { name: 'idx_plan', sql: 'KEY `idx_plan` (`plan`)' }
+        ];
+        
+        for (const idx of indexesToAdd) {
+            if (!licenseIndexNames.includes(idx.name)) {
+                try {
+                    await dbPool.query(`ALTER TABLE \`${DB_LICENSES_TABLE}\` ADD ${idx.sql}`);
+                    console.log(`   ✅ Added index '${idx.name}' to ${DB_LICENSES_TABLE}`);
+                } catch (idxError) {
+                    // Index might already exist
+                    if (!idxError.message.includes('Duplicate key')) {
+                        console.log(`   ⚠️  Could not add index '${idx.name}': ${idxError.message}`);
+                    }
+                }
+            }
+        }
+        
+    } catch (error) {
+        console.error('⚠️  Migration failed:', error.message);
+        // Don't throw - allow server to continue even if migration fails
     }
 }
 

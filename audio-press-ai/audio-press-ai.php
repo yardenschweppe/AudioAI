@@ -99,7 +99,7 @@ define('AUDIO_PRESS_AI_API_URL', 'https://chatix.co.il/audio-api'); // Audio-Pre
 
 // Development mode - set to true for testing without Pro license
 // Change to false for production
-define('AUDIO_PRESS_AI_DEV_MODE', true); // Set to false in production!
+define('AUDIO_PRESS_AI_DEV_MODE', false); // Set to false in production!
 
 // Block Freemius asset requests ONLY if explicitly disabled
 // This code should NOT run if Freemius is enabled
