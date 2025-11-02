@@ -29,7 +29,16 @@ const FREEMIUS_DEVELOPER_ID = process.env.FREEMIUS_DEVELOPER_ID || 21493;
 const FREEMIUS_PUBLIC_KEY = process.env.FREEMIUS_PUBLIC_KEY || 'pk_c1f4731e093f2279f624161d5ee8b';
 const FREEMIUS_SECRET_KEY = process.env.FREEMIUS_SECRET_KEY || 'sk_0MMUBME@.WS)<IG1GLBsW(~w<0b)X';
 const FREEMIUS_PLUGIN_ID = process.env.FREEMIUS_PLUGIN_ID || 21493;
-const PIPER_MODEL_PATH = '/opt/piper/voices/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx';
+// Piper model paths by language
+// ניתן להגדיר ב-.env: PIPER_MODEL_EN, PIPER_MODEL_HE, etc.
+const PIPER_MODELS = {
+    'en': process.env.PIPER_MODEL_EN || '/opt/piper/voices/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx',
+    'he': process.env.PIPER_MODEL_HE || null, // עברית - לא מותקן כרגע
+    // ניתן להוסיף שפות נוספות:
+    // 'ar': process.env.PIPER_MODEL_AR || null,
+    // 'es': process.env.PIPER_MODEL_ES || null,
+};
+
 const PIPER_BIN = process.env.PIPER_BIN || '/opt/piper/.venv/bin/piper'; // נתיב אבסולוטי
 const MONTHLY_CHAR_LIMIT = 200000; // 200K characters per month
 
@@ -49,6 +58,19 @@ if (TEST_MODE) {
     console.log('   ⚠️  TEST MODE ENABLED - Freemius validation will be skipped');
 } else {
     console.log('   🔐 Freemius validation is ACTIVE');
+}
+
+// Display supported languages
+console.log('\n🌍 Supported Languages:');
+const languageNames = { 'en': 'English', 'he': 'עברית (Hebrew)' };
+for (const [lang, modelPath] of Object.entries(PIPER_MODELS)) {
+    if (modelPath && fs.existsSync(modelPath)) {
+        console.log(`   ✅ ${languageNames[lang] || lang}: ${modelPath}`);
+    } else if (modelPath) {
+        console.log(`   ⚠️  ${languageNames[lang] || lang}: Model file not found at ${modelPath}`);
+    } else {
+        console.log(`   ❌ ${languageNames[lang] || lang}: Not configured (set PIPER_MODEL_${lang.toUpperCase()} in .env)`);
+    }
 }
 console.log('');
 
@@ -259,6 +281,44 @@ function incrementGenerateCount(licenseKey, wpUserId = null) {
 }
 
 /**
+ * Detect language from text (simple heuristic)
+ * Returns language code: 'he' for Hebrew, 'en' for English/default
+ */
+function detectLanguage(text) {
+    // Check for Hebrew characters (Unicode range: \u0590-\u05FF)
+    const hebrewRegex = /[\u0590-\u05FF]/;
+    if (hebrewRegex.test(text)) {
+        return 'he';
+    }
+    // Default to English
+    return 'en';
+}
+
+/**
+ * Get model path for a language
+ * Returns { modelPath, language } or throws error if language not supported
+ */
+function getModelForLanguage(language) {
+    const modelPath = PIPER_MODELS[language];
+    
+    if (!modelPath) {
+        const languageNames = {
+            'en': 'אנגלית',
+            'he': 'עברית',
+        };
+        const langName = languageNames[language] || language;
+        throw new Error(`מודל ${langName} לא מותקן או לא מוגדר בשרת. כרגע תומך רק באנגלית.`);
+    }
+    
+    // Verify model file exists
+    if (!fs.existsSync(modelPath)) {
+        throw new Error(`מודל לא נמצא בנתיב: ${modelPath}`);
+    }
+    
+    return { modelPath, language };
+}
+
+/**
  * Generate audio using Piper TTS
  */
 function runPiper(text, modelPath, outPath) {
@@ -284,16 +344,28 @@ function runPiper(text, modelPath, outPath) {
 
 async function generateAudioWithPiper(text) {
     return new Promise((resolve, reject) => {
-        // 1. יצירת נתיב לקובץ זמני
+        // 1. זיהוי שפה של הטקסט
+        const detectedLanguage = detectLanguage(text);
+        console.log(`Detected language: ${detectedLanguage} for text: ${text.substring(0, 50)}...`);
+        
+        // 2. קבלת מודל מתאים לשפה
+        let modelInfo;
+        try {
+            modelInfo = getModelForLanguage(detectedLanguage);
+        } catch (error) {
+            return reject(error);
+        }
+        
+        // 3. יצירת נתיב לקובץ זמני
         const tempFileName = `piper_out_${Date.now()}_${Math.floor(Math.random() * 1000)}.wav`;
         const tempFilePath = path.join('/tmp', tempFileName);
 
-        // 2. הרצת Piper עם spawn - שליחת טקסט ישירות ל-stdin
-        runPiper(text, PIPER_MODEL_PATH, tempFilePath)
+        // 4. הרצת Piper עם spawn - שליחת טקסט ישירות ל-stdin
+        runPiper(text, modelInfo.modelPath, tempFilePath)
             .then(() => {
-                // 3. קריאת הקובץ שנוצר
+                // 5. קריאת הקובץ שנוצר
                 fs.readFile(tempFilePath, (readError, data) => {
-                    // 4. מחיקת הקובץ הזמני (ניקיון)
+                    // 6. מחיקת הקובץ הזמני (ניקיון)
                     if (fs.existsSync(tempFilePath)) {
                         fs.unlink(tempFilePath, (unlinkError) => {
                             if (unlinkError) {
@@ -307,8 +379,8 @@ async function generateAudioWithPiper(text) {
                         return reject(new Error(`Failed to read generated audio file: ${readError.message}`));
                     }
 
-                    // 5. החזרת הדאטה של האודיו (Buffer)
-                    console.log(`Piper successfully generated ${data.length} bytes.`);
+                    // 7. החזרת הדאטה של האודיו (Buffer)
+                    console.log(`Piper successfully generated ${data.length} bytes using ${modelInfo.language} model.`);
                     resolve(data); // data is a Buffer
                 });
             })
@@ -579,7 +651,7 @@ process.on('uncaughtException', (error) => {
     // Don't exit, but log the error so the server keeps running
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3004;
 app.listen(PORT, () => {
     console.log('');
     console.log('🚀 Audio-Press AI Server started successfully!');
