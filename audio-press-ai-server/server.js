@@ -6,9 +6,10 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 // טעינת ESM דינמית מתוך CommonJS
+// טעינת ESM franc-min מתוך CommonJS
 let _franc;
 async function detectISO3(text) {
-  _franc = _franc || (await import('franc-min')).default;
+  if (!_franc) _franc = (await import('franc-min')).default;
   return _franc(text || '', { minLength: 10 });
 }
 
@@ -322,125 +323,67 @@ function incrementGenerateCount(licenseKey, wpUserId = null) {
  * - jpn -> zh (Japanese, mapped to CJK)
  * - kor -> zh (Korean, mapped to CJK)
  */
-function detectLanguage(text) {
-    // Remove excessive whitespace but keep some structure for better detection
-    const cleanText = text.trim().replace(/\s+/g, ' ');
-    
-    if (cleanText.length < 10) {
-        // Too short for reliable detection - default to English
-        return 'en';
+// Async language detection using franc-min (ESM) via detectISO3()
+// hintLang can be 'pt_PT', 'pt_BR', 'nl_BE' etc.
+async function detectLanguage(text, hintLang) {
+    const cleanText = (text || '').trim().replace(/\s+/g, ' ');
+    const iso3 = cleanText.length < 10 ? 'eng' : await detectISO3(cleanText);
+  
+    // Map ISO-639-3 -> our Piper keys
+    let lang = ({
+      eng: 'en',
+      spa: 'es',
+      deu: 'de',
+      nld: 'nl_NL',
+      por: 'pt_BR',
+      heb: 'he',
+      ara: 'ar',
+      rus: 'ru',
+      cmn: 'zh',
+      zho: 'zh',
+      jpn: 'zh',
+      kor: 'zh',
+    })[iso3] || 'en';
+  
+    // Respect client hint for dialects
+    if (lang === 'pt_BR' && hintLang) {
+      const h = hintLang.replace('-', '_');
+      if (h === 'pt_PT' || h === 'pt_BR') lang = h;
     }
-    
-    try {
-        // Use franc-min for language detection
-        // franc returns ISO 639-3 code (3 letters) or 'und' (undefined) if unsure
-        const detectedCode = franc(cleanText);
-        
-        // franc may return 'und' (undefined) for very short or mixed text
-        if (!detectedCode || detectedCode === 'und') {
-            console.log(`⚠️  franc returned undefined/und for text, defaulting to English`);
-            return 'en';
-        }
-        
-        // Map franc ISO 639-3 codes to our language codes
-        const languageMap = {
-            // English variants
-            'eng': 'en',
-            
-            // Spanish
-            'spa': 'es',
-            
-            // German
-            'deu': 'de',
-            
-            // Dutch - default to Netherlands Dutch
-            'nld': 'nl_NL',
-            
-            // Portuguese - default to Brazilian Portuguese
-            'por': 'pt_BR',
-            
-            // Hebrew
-            'heb': 'he',
-            
-            // Arabic
-            'ara': 'ar',
-            
-            // Russian
-            'rus': 'ru',
-            
-            // Chinese - map to zh (CJK category)
-            'cmn': 'zh', // Mandarin Chinese
-            'zho': 'zh', // Chinese (generic)
-            
-            // Japanese - map to zh (CJK category)
-            'jpn': 'zh',
-            
-            // Korean - map to zh (CJK category)
-            'kor': 'zh',
-        };
-        
-        // Check if detected language is in our map
-        let mappedLanguage = languageMap[detectedCode];
-        
-        // If detected Portuguese, default to Brazilian (franc doesn't distinguish PT vs BR)
-        if (detectedCode === 'por') {
-            mappedLanguage = 'pt_BR'; // Default to Brazilian
-        }
-        
-        // If detected Dutch, default to Netherlands Dutch (franc doesn't distinguish NL vs BE)
-        if (detectedCode === 'nld') {
-            mappedLanguage = 'nl_NL'; // Default to Netherlands Dutch
-        }
-        
-        // If not in map or undefined, default to English
-        if (!mappedLanguage) {
-            // Log unknown language for debugging
-            console.log(`⚠️  Unknown language code from franc: ${detectedCode}, defaulting to English`);
-            return 'en';
-        }
-        
-        return mappedLanguage;
-    } catch (error) {
-        // Fallback to English if franc throws an error
-        console.error(`Error in detectLanguage: ${error.message}`);
-        return 'en';
+    if (lang === 'nl_NL' && hintLang) {
+      const h = hintLang.replace('-', '_');
+      if (h === 'nl_BE' || h === 'nl_NL') lang = h;
     }
-}
+  
+    return lang;
+  }
 
 /**
  * Get model path for a language
  * Returns { modelPath, language } or throws error if language not supported
  */
 async function getModelForLanguage(text, hintLang) {
-    const iso3 = await detectISO3(text);
-    const modelPath = await getModelForLanguage(text, langHint);
-    
+    // if client explicitly requested a supported language, prefer it
+    if (hintLang && PIPER_MODELS[hintLang]) {
+      const mp = PIPER_MODELS[hintLang];
+      if (!fs.existsSync(mp)) throw new Error(`מודל לא נמצא בנתיב: ${mp}`);
+      return { modelPath: mp, language: hintLang };
+    }
+  
+    const language = await detectLanguage(text, hintLang);
+    const modelPath = PIPER_MODELS[language];
+  
     if (!modelPath) {
-        const languageNames = {
-            'en': 'אנגלית',
-            'es': 'ספרדית',
-            'pt_PT': 'פורטוגזית (פורטוגל)',
-            'pt_BR': 'פורטוגזית (ברזיל)',
-            'de': 'גרמנית',
-            'nl_NL': 'הולנדית (הולנד)',
-            'nl_BE': 'הולנדית (בלגיה)',
-            'he': 'עברית',
-            'ar': 'ערבית',
-            'ru': 'רוסית',
-            'zh': 'סינית/יפנית/קוריאנית',
-        };
-        const langName = languageNames[language] || language;
-        const supportedLangs = Object.keys(PIPER_MODELS).filter(lang => PIPER_MODELS[lang] !== null).join(', ');
-        throw new Error(`מודל ${langName} לא מותקן או לא מוגדר בשרת. השפות הנתמכות כרגע: ${supportedLangs || 'אנגלית בלבד'}.`);
+      const supportedLangs = Object.entries(PIPER_MODELS)
+        .filter(([, v]) => !!v)
+        .map(([k]) => k).join(', ');
+      throw new Error(`מודל לשפה "${language}" לא מוגדר. השפות המותקנות: ${supportedLangs || 'אנגלית בלבד'}.`);
     }
-    
-    // Verify model file exists
     if (!fs.existsSync(modelPath)) {
-        throw new Error(`מודל לא נמצא בנתיב: ${modelPath}`);
+      throw new Error(`מודל לא נמצא בנתיב: ${modelPath}`);
     }
-    
     return { modelPath, language };
-}
+  }
 
 /**
  * Generate audio using Piper TTS
@@ -466,58 +409,21 @@ function runPiper(text, modelPath, outPath) {
     });
 }
 
-async function generateAudioWithPiper(text) {
-    return new Promise((resolve, reject) => {
-        // 1. זיהוי שפה של הטקסט
-        const detectedLanguage = detectLanguage(text);
-        console.log(`Detected language: ${detectedLanguage} for text: ${text.substring(0, 50)}...`);
-        
-        // 2. קבלת מודל מתאים לשפה
-        let modelInfo;
-        try {
-            modelInfo = getModelForLanguage(detectedLanguage);
-        } catch (error) {
-            return reject(error);
-        }
-        
-        // 3. יצירת נתיב לקובץ זמני
-        const tempFileName = `piper_out_${Date.now()}_${Math.floor(Math.random() * 1000)}.wav`;
-        const tempFilePath = path.join('/tmp', tempFileName);
-
-        // 4. הרצת Piper עם spawn - שליחת טקסט ישירות ל-stdin
-        runPiper(text, modelInfo.modelPath, tempFilePath)
-            .then(() => {
-                // 5. קריאת הקובץ שנוצר
-                fs.readFile(tempFilePath, (readError, data) => {
-                    // 6. מחיקת הקובץ הזמני (ניקיון)
-                    if (fs.existsSync(tempFilePath)) {
-                        fs.unlink(tempFilePath, (unlinkError) => {
-                            if (unlinkError) {
-                                console.error(`Warning: Failed to delete temp file: ${tempFilePath}`);
-                            }
-                        });
-                    }
-
-                    if (readError) {
-                        console.error(`Error reading temp file: ${readError}`);
-                        return reject(new Error(`Failed to read generated audio file: ${readError.message}`));
-                    }
-
-                    // 7. החזרת הדאטה של האודיו (Buffer)
-                    console.log(`Piper successfully generated ${data.length} bytes using ${modelInfo.language} model.`);
-                    resolve(data); // data is a Buffer
-                });
-            })
-            .catch((error) => {
-                // Clean up temp file if it exists
-                if (fs.existsSync(tempFilePath)) {
-                    fs.unlinkSync(tempFilePath);
-                }
-                console.error(`Piper error: ${error.message}`);
-                reject(new Error(`Failed to generate audio with Piper: ${error.message}`));
-            });
-    });
-}
+async function generateAudioWithPiper(text, hintLang) {
+    const { modelPath, language } = await getModelForLanguage(text, hintLang);
+    const tempFilePath = path.join('/tmp', `piper_out_${Date.now()}_${Math.floor(Math.random()*1000)}.wav`);
+  
+    try {
+      await runPiper(text, modelPath, tempFilePath);
+      const data = fs.readFileSync(tempFilePath);
+      console.log(`Piper successfully generated ${data.length} bytes using ${language} model.`);
+      return data;
+    } finally {
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlink(tempFilePath, () => {});
+      }
+    }
+  }
 
 // Audio files are sent directly to WordPress, no storage function needed
 
@@ -526,51 +432,27 @@ async function generateAudioWithPiper(text) {
  */
 app.post('/detect-language', async (req, res) => {
     try {
-        const { text } = req.body;
-        
-        if (!text || typeof text !== 'string') {
-            return res.status(400).json({ error: 'Text is required' });
-        }
-        
-        const detectedLanguage = detectLanguage(text);
-        
-        // Get list of available languages
-        const availableLanguages = Object.keys(PIPER_MODELS).filter(lang => PIPER_MODELS[lang] !== null);
-        
-        // Get language names for display
-        const languageNames = {
-            'en': 'English',
-            'es': 'Español (Spanish)',
-            'pt_PT': 'Português PT (Portuguese Portugal)',
-            'pt_BR': 'Português BR (Portuguese Brazil)',
-            'de': 'Deutsch (German)',
-            'nl_NL': 'Nederlands NL (Dutch Netherlands)',
-            'nl_BE': 'Nederlands BE (Dutch Belgium)',
-            'he': 'עברית (Hebrew)',
-            'ar': 'ערבית (Arabic)',
-            'ru': 'Русский (Russian)',
-            'zh': '中文/日本語/한국어 (CJK)'
-        };
-        
-        const languages = availableLanguages.map(lang => ({
-            code: lang,
-            name: languageNames[lang] || lang,
-            isDetected: lang === detectedLanguage
-        }));
-        
-        res.json({
-            detected: detectedLanguage,
-            available: languages,
-            languageName: languageNames[detectedLanguage] || detectedLanguage
-        });
-        
+      const { text, langHint } = req.body;
+      if (!text || typeof text !== 'string') {
+        return res.status(400).json({ error: 'Text is required' });
+      }
+      const detectedLanguage = await detectLanguage(text, langHint);
+  
+      const availableLanguages = Object.keys(PIPER_MODELS).filter(l => PIPER_MODELS[l]);
+      const languageNames = { 
+        'en':'English','es':'Español (Spanish)','pt_PT':'Português PT (Portuguese Portugal)','pt_BR':'Português BR (Portuguese Brazil)','de':'Deutsch (German)','nl_NL':'Nederlands NL (Dutch Netherlands)','nl_BE':'Nederlands BE (Dutch Belgium)','he':'עברית (Hebrew)','ar':'ערבית (Arabic)','ru':'Русский (Russian)','zh':'中文/日本語/한국어 (CJK)'
+      };
+  
+      res.json({
+        detected: detectedLanguage,
+        available: availableLanguages.map(code => ({ code, name: languageNames[code] || code, isDetected: code === detectedLanguage })),
+        languageName: languageNames[detectedLanguage] || detectedLanguage
+      });
     } catch (error) {
-        console.error('Error in /detect-language:', error);
-        res.status(500).json({
-            error: error.message || 'Internal server error'
-        });
+      console.error('Error in /detect-language:', error);
+      res.status(500).json({ error: error.message || 'Internal server error' });
     }
-});
+  });
 
 /**
  * Main API endpoint
@@ -635,7 +517,8 @@ app.post('/generate', async (req, res) => {
         console.log(`Generating audio for ${textLength} characters...`);
         let audioBuffer;
         try {
-            audioBuffer = await generateAudioWithPiper(text, language || null);
+// בתוך /generate:
+audioBuffer = await generateAudioWithPiper(text, language || null);
         } catch (audioError) {
             console.error('Audio generation failed:', audioError);
             // Revert usage since generation failed
