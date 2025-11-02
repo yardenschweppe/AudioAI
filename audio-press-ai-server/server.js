@@ -30,12 +30,15 @@ const FREEMIUS_PUBLIC_KEY = process.env.FREEMIUS_PUBLIC_KEY || 'pk_c1f4731e093f2
 const FREEMIUS_SECRET_KEY = process.env.FREEMIUS_SECRET_KEY || 'sk_0MMUBME@.WS)<IG1GLBsW(~w<0b)X';
 const FREEMIUS_PLUGIN_ID = process.env.FREEMIUS_PLUGIN_ID || 21493;
 // Piper model paths by language
-// ניתן להגדיר ב-.env: PIPER_MODEL_EN, PIPER_MODEL_ES, PIPER_MODEL_PT_PT, PIPER_MODEL_PT_BR, etc.
+// ניתן להגדיר ב-.env: PIPER_MODEL_EN, PIPER_MODEL_ES, PIPER_MODEL_DE, PIPER_MODEL_NL_NL, etc.
 const PIPER_MODELS = {
     'en': process.env.PIPER_MODEL_EN || '/opt/piper/voices/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx',
     'es': process.env.PIPER_MODEL_ES || '/opt/piper/voices/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx',
     'pt_PT': process.env.PIPER_MODEL_PT_PT || '/opt/piper/voices/pt/pt_PT/tugao/medium/pt_PT-tugao-medium.onnx',
     'pt_BR': process.env.PIPER_MODEL_PT_BR || '/opt/piper/voices/pt/pt_BR/cadu/medium/pt_BR-cadu-medium.onnx',
+    'de': process.env.PIPER_MODEL_DE || '/opt/piper/voices/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx',
+    'nl_NL': process.env.PIPER_MODEL_NL_NL || '/opt/piper/voices/nl/nl_NL/ronnie/medium/nl_NL-ronnie-medium.onnx',
+    'nl_BE': process.env.PIPER_MODEL_NL_BE || '/opt/piper/voices/nl/nl_BE/rdh/medium/nl_BE-rdh-medium.onnx',
     // מודלים נוספים (לא מותקנים כרגע):
     'he': process.env.PIPER_MODEL_HE || null, // עברית
     'ar': process.env.PIPER_MODEL_AR || null, // ערבית
@@ -71,6 +74,9 @@ const languageNames = {
     'es': 'Español (Spanish)',
     'pt_PT': 'Português PT (Portuguese Portugal)',
     'pt_BR': 'Português BR (Portuguese Brazil)',
+    'de': 'Deutsch (German)',
+    'nl_NL': 'Nederlands NL (Dutch Netherlands)',
+    'nl_BE': 'Nederlands BE (Dutch Belgium)',
     'he': 'עברית (Hebrew)', 
     'ar': 'ערבית (Arabic)',
     'ru': 'Русский (Russian)',
@@ -321,9 +327,11 @@ function detectLanguage(text) {
     let cjkCount = 0;
     let latinCount = 0;
     
-    // Count language-specific characters for Romance languages
+    // Count language-specific characters for various languages
     let spanishChars = 0; // ñ, á, é, í, ó, ú, ü
     let portugueseChars = 0; // ç, á, é, í, ó, ú, â, ê, ô, ã, õ, ü
+    let germanChars = 0; // ä, ö, ü, ß
+    let dutchChars = 0; // ij (digraph), also counts ä, ö, ü, é, ë, ï
     
     for (let i = 0; i < cleanText.length; i++) {
         const char = cleanText[i];
@@ -367,6 +375,18 @@ function detectLanguage(text) {
                 lowerChar === 'ã' || lowerChar === 'õ' || lowerChar === 'ü') {
                 portugueseChars++;
             }
+            
+            // Check for German-specific characters
+            if (lowerChar === 'ä' || lowerChar === 'ö' || lowerChar === 'ü' || lowerChar === 'ß') {
+                germanChars++;
+            }
+            
+            // Check for Dutch-specific characters (ij is common but hard to detect as single char)
+            // Also count some shared characters that are common in Dutch
+            if (lowerChar === 'ë' || lowerChar === 'ï' || lowerChar === 'é' || 
+                lowerChar === 'ä' || lowerChar === 'ö' || lowerChar === 'ü') {
+                dutchChars++;
+            }
         }
     }
     
@@ -387,10 +407,30 @@ function detectLanguage(text) {
         return 'zh'; // Chinese/Japanese/Korean (not yet supported, but detected)
     }
     
-    // For Latin script, check for Romance language indicators
+    // For Latin script, check for language-specific indicators
     // Use a lower threshold for language-specific characters (10% of text)
     const langThreshold = totalChars * 0.1;
     
+    // Check for German (ß is very distinctive, ä/ö/ü also common)
+    if (germanChars >= langThreshold) {
+        return 'de'; // German
+    }
+    
+    // Check for Dutch (ë, ï are more distinctive for Dutch, but also check for ij digraph)
+    // The "ij" digraph is very common in Dutch words
+    const ijPattern = /ij/gi;
+    const ijMatches = (text.match(ijPattern) || []).length;
+    // Also check for common Dutch words as additional indicator
+    const dutchWords = /\b(het|de|een|van|is|zijn|voor|op|met|dat|te|in|aan|hij|als|ook|er|maar|om|mijn|was|over|kan|waar|bij|niet|kunnen|haar|zij|dan|uit|naar|meer|welke|doen|zou|hier|nu|hoe|die|der|moet|na|dit|alleen|zoals|naar|hem|ons|bij|onder|tussen)\b/gi;
+    const dutchWordMatches = (text.match(dutchWords) || []).length;
+    
+    if ((dutchChars >= langThreshold && dutchChars > germanChars) || ijMatches >= 2 || dutchWordMatches >= 3) {
+        // Default to Netherlands Dutch (nl_NL), but could be Belgian Dutch (nl_BE)
+        // For now, prefer nl_NL; could be improved with word-based detection
+        return 'nl_NL'; // Dutch (default to Netherlands Dutch)
+    }
+    
+    // Check Romance languages
     if (spanishChars >= langThreshold && spanishChars > portugueseChars) {
         return 'es'; // Spanish
     }
@@ -415,6 +455,9 @@ function getModelForLanguage(language) {
             'es': 'ספרדית',
             'pt_PT': 'פורטוגזית (פורטוגל)',
             'pt_BR': 'פורטוגזית (ברזיל)',
+            'de': 'גרמנית',
+            'nl_NL': 'הולנדית (הולנד)',
+            'nl_BE': 'הולנדית (בלגיה)',
             'he': 'עברית',
             'ar': 'ערבית',
             'ru': 'רוסית',
@@ -513,11 +556,62 @@ async function generateAudioWithPiper(text) {
 // Audio files are sent directly to WordPress, no storage function needed
 
 /**
+ * Language detection endpoint
+ */
+app.post('/detect-language', async (req, res) => {
+    try {
+        const { text } = req.body;
+        
+        if (!text || typeof text !== 'string') {
+            return res.status(400).json({ error: 'Text is required' });
+        }
+        
+        const detectedLanguage = detectLanguage(text);
+        
+        // Get list of available languages
+        const availableLanguages = Object.keys(PIPER_MODELS).filter(lang => PIPER_MODELS[lang] !== null);
+        
+        // Get language names for display
+        const languageNames = {
+            'en': 'English',
+            'es': 'Español (Spanish)',
+            'pt_PT': 'Português PT (Portuguese Portugal)',
+            'pt_BR': 'Português BR (Portuguese Brazil)',
+            'de': 'Deutsch (German)',
+            'nl_NL': 'Nederlands NL (Dutch Netherlands)',
+            'nl_BE': 'Nederlands BE (Dutch Belgium)',
+            'he': 'עברית (Hebrew)',
+            'ar': 'ערבית (Arabic)',
+            'ru': 'Русский (Russian)',
+            'zh': '中文/日本語/한국어 (CJK)'
+        };
+        
+        const languages = availableLanguages.map(lang => ({
+            code: lang,
+            name: languageNames[lang] || lang,
+            isDetected: lang === detectedLanguage
+        }));
+        
+        res.json({
+            detected: detectedLanguage,
+            available: languages,
+            languageName: languageNames[detectedLanguage] || detectedLanguage
+        });
+        
+    } catch (error) {
+        console.error('Error in /detect-language:', error);
+        res.status(500).json({
+            error: error.message || 'Internal server error'
+        });
+    }
+});
+
+/**
  * Main API endpoint
  */
 app.post('/generate', async (req, res) => {
     try {
-        const { license_key, wp_user_id, text, model, voice } = req.body;
+        const { license_key, wp_user_id, text, model, voice, language } = req.body;
         
         // Validate input
         if (!license_key || !text) {
@@ -575,7 +669,7 @@ app.post('/generate', async (req, res) => {
         console.log(`Generating audio for ${textLength} characters...`);
         let audioBuffer;
         try {
-            audioBuffer = await generateAudioWithPiper(text);
+            audioBuffer = await generateAudioWithPiper(text, language || null);
         } catch (audioError) {
             console.error('Audio generation failed:', audioError);
             // Revert usage since generation failed

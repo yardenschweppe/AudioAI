@@ -20,6 +20,7 @@ class Audio_Press_AI {
         // AJAX handlers
         add_action('wp_ajax_audio_press_ai_generate', array($this, 'ajax_generate_audio'));
         add_action('wp_ajax_audio_press_ai_delete', array($this, 'ajax_delete_audio'));
+        add_action('wp_ajax_audio_press_ai_detect_language', array($this, 'ajax_detect_language'));
         
         // Frontend hooks
         add_filter('the_content', array($this, 'embed_audio_player'), 10);
@@ -371,11 +372,28 @@ class Audio_Press_AI {
             
             <?php if ($audio_url): ?>
                 <div id="audio-press-ai-player-wrapper">
-                    <audio controls style="width: 100%; margin-bottom: 10px;">
-                        <source src="<?php echo esc_url($audio_url); ?>" type="audio/wav">
-                        <source src="<?php echo esc_url($audio_url); ?>" type="audio/mpeg">
-                        <?php _e('Your browser does not support the audio element.', 'audio-press-ai'); ?>
-                    </audio>
+                    <div class="audio-press-ai-custom-player">
+                        <div class="player-controls">
+                            <button class="play-pause-btn paused" id="audio-press-ai-play-pause" type="button"></button>
+                            <div class="player-info">
+                                <div class="progress-container">
+                                    <div class="progress-bar-wrapper" id="audio-press-ai-progress-wrapper">
+                                        <div class="progress-bar" id="audio-press-ai-progress"></div>
+                                    </div>
+                                </div>
+                                <div class="time-display">
+                                    <span class="time-current" id="audio-press-ai-time-current">0:00</span>
+                                    <span class="time-separator">/</span>
+                                    <span class="time-total" id="audio-press-ai-time-total">0:00</span>
+                                </div>
+                            </div>
+                        </div>
+                        <audio id="audio-press-ai-audio-element" preload="metadata">
+                            <source src="<?php echo esc_url($audio_url); ?>" type="audio/wav">
+                            <source src="<?php echo esc_url($audio_url); ?>" type="audio/mpeg">
+                            <?php _e('Your browser does not support the audio element.', 'audio-press-ai'); ?>
+                        </audio>
+                    </div>
                     <div style="display: flex; gap: 5px;">
                         <button type="button" 
                                 class="button button-secondary" 
@@ -390,6 +408,20 @@ class Audio_Press_AI {
                         </button>
                     </div>
                 </div>
+                <script>
+                jQuery(document).ready(function($) {
+                    if (typeof initExistingPlayer === 'function') {
+                        initExistingPlayer();
+                    } else {
+                        // Fallback: wait for admin.js to load
+                        setTimeout(function() {
+                            if (typeof initExistingPlayer === 'function') {
+                                initExistingPlayer();
+                            }
+                        }, 100);
+                    }
+                });
+                </script>
             <?php else: ?>
                 <button type="button" 
                         class="button button-primary button-large" 
@@ -513,8 +545,11 @@ class Audio_Press_AI {
         // Get WordPress user ID for tracking
         $wp_user_id = get_current_user_id();
         
+        // Get language if provided (for override)
+        $language = isset($_POST['language']) ? sanitize_text_field($_POST['language']) : null;
+        
         // Call remote API server
-        $response = $this->call_remote_api($api_server_url, $license_key, $wp_user_id, $model, $voice, $content);
+        $response = $this->call_remote_api($api_server_url, $license_key, $wp_user_id, $model, $voice, $content, $language);
         
         if (is_wp_error($response)) {
             wp_send_json_error(array('message' => $response->get_error_message()));
@@ -696,9 +731,84 @@ class Audio_Press_AI {
     }
     
     /**
+     * AJAX handler for detecting language
+     */
+    public function ajax_detect_language() {
+        // Verify nonce
+        check_ajax_referer('audio_press_ai_meta_box', 'nonce');
+        
+        // Check user capabilities
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error(array('message' => __('Insufficient permissions', 'audio-press-ai')));
+        }
+        
+        // Validate and sanitize post ID
+        if (!isset($_POST['post_id'])) {
+            wp_send_json_error(array('message' => __('Post ID is required', 'audio-press-ai')));
+        }
+        
+        $post_id = absint($_POST['post_id']);
+        if (!$post_id || !is_numeric($_POST['post_id'])) {
+            wp_send_json_error(array('message' => __('Invalid post ID', 'audio-press-ai')));
+        }
+        
+        // Get post content
+        $content = get_post_field('post_content', $post_id);
+        
+        if (empty($content)) {
+            wp_send_json_error(array('message' => __('Post content is empty', 'audio-press-ai')));
+        }
+        
+        // Clean content: remove HTML, shortcodes, etc.
+        $content = wp_strip_all_tags($content);
+        $content = do_shortcode($content);
+        $content = wp_strip_all_tags($content);
+        $content = preg_replace('/\s+/', ' ', $content);
+        $content = trim($content);
+        
+        if (empty($content)) {
+            wp_send_json_error(array('message' => __('Post content is empty after processing', 'audio-press-ai')));
+        }
+        
+        $api_server_url = get_option('audio_press_ai_api_server_url', AUDIO_PRESS_AI_API_URL);
+        $api_server_url = esc_url_raw(rtrim($api_server_url, '/'));
+        
+        if (empty($api_server_url) || !filter_var($api_server_url, FILTER_VALIDATE_URL)) {
+            wp_send_json_error(array('message' => __('Invalid API server URL', 'audio-press-ai')));
+        }
+        
+        $url = $api_server_url . '/detect-language';
+        
+        $args = array(
+            'method' => 'POST',
+            'headers' => array(
+                'Content-Type' => 'application/json',
+            ),
+            'body' => json_encode(array('text' => $content), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'timeout' => 30,
+            'sslverify' => true,
+        );
+        
+        $response = wp_remote_request($url, $args);
+        
+        if (is_wp_error($response)) {
+            wp_send_json_error(array('message' => $response->get_error_message()));
+        }
+        
+        $response_body = wp_remote_retrieve_body($response);
+        $response_data = json_decode($response_body, true);
+        
+        if (json_last_error() !== JSON_ERROR_NONE || isset($response_data['error'])) {
+            wp_send_json_error(array('message' => isset($response_data['error']) ? $response_data['error'] : __('Failed to detect language', 'audio-press-ai')));
+        }
+        
+        wp_send_json_success($response_data);
+    }
+    
+    /**
      * Call remote API server
      */
-    private function call_remote_api($api_url, $license_key, $wp_user_id, $model, $voice, $text) {
+    private function call_remote_api($api_url, $license_key, $wp_user_id, $model, $voice, $text, $language = null) {
         // Validate and sanitize URL
         $base_url = esc_url_raw(rtrim($api_url, '/'));
         if (empty($base_url) || !filter_var($base_url, FILTER_VALIDATE_URL)) {
@@ -715,6 +825,11 @@ class Audio_Press_AI {
             'voice' => sanitize_text_field($voice),
             'text' => sanitize_textarea_field($text) // More appropriate for text content
         );
+        
+        // Add language if provided
+        if ($language) {
+            $body['language'] = sanitize_text_field($language);
+        }
         
         // Validate text length
         if (empty($body['text']) || strlen($body['text']) > 50000) {
