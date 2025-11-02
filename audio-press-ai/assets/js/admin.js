@@ -11,19 +11,62 @@ jQuery(document).ready(function($) {
     // Function to get post ID dynamically
     function getPostId() {
         var id = '';
+        
         // Try multiple methods to get post ID
-        if (container.length) {
-            id = container.attr('data-post-id') || container.data('post-id') || '';
+        // Method 1: Re-check container (it might be added dynamically)
+        var $container = $('#audio-press-ai-container');
+        if ($container.length) {
+            id = $container.attr('data-post-id') || $container.data('post-id') || '';
         }
-        if (!id) {
+        
+        // Method 2: From WordPress post_ID field (most reliable for classic editor)
+        if (!id || id === '0') {
             var postIdField = $('#post_ID');
             if (postIdField.length) {
-                id = postIdField.val() || '';
+                var fieldVal = postIdField.val();
+                if (fieldVal && fieldVal !== '0' && fieldVal !== '') {
+                    id = fieldVal;
+                }
             }
         }
+        
+        // Method 3: Try to get from URL (for edit pages like post.php?post=123&action=edit)
+        if (!id || id === '0') {
+            var urlMatch = window.location.href.match(/[?&]post=(\d+)/);
+            if (urlMatch && urlMatch[1] && urlMatch[1] !== '0') {
+                id = urlMatch[1];
+            }
+        }
+        
+        // Method 4: Try wp.data if Gutenberg editor is active
+        if ((!id || id === '0') && window.wp && window.wp.data && window.wp.data.select) {
+            try {
+                var editor = window.wp.data.select('core/editor');
+                if (editor && editor.getCurrentPostId) {
+                    var gutenbergPostId = editor.getCurrentPostId();
+                    if (gutenbergPostId && gutenbergPostId !== 0) {
+                        id = String(gutenbergPostId);
+                    }
+                }
+            } catch(e) {
+                // Gutenberg not available or not loaded yet
+            }
+        }
+        
+        // Method 5: Try to get from form input (sometimes WordPress uses different field names)
+        if (!id || id === '0') {
+            var formInput = $('input[name="post_ID"], input[name="post_id"], #post_id');
+            if (formInput.length) {
+                var inputVal = formInput.val();
+                if (inputVal && inputVal !== '0' && inputVal !== '') {
+                    id = inputVal;
+                }
+            }
+        }
+        
         // Convert to number and validate
         id = parseInt(id, 10);
-        return (id && id > 0) ? id : '';
+        return (id && id > 0 && !isNaN(id)) ? String(id) : '';
     }
     
     var postId = getPostId();
@@ -429,6 +472,7 @@ jQuery(document).ready(function($) {
     // Generate audio
     function generateAudio() {
         var currentPostId = getPostId();
+        
         if (!currentPostId) {
             alert('Post ID not found. Please save the post first.');
             return;
@@ -444,10 +488,10 @@ jQuery(document).ready(function($) {
         statusDiv.css('border-left-color', '#2271b1'); // Blue for info
         statusText.text(audioPressAI.generating);
         
-        // Prepare data
+        // Prepare data - ensure post_id is a string/number
         var ajaxData = {
             action: 'audio_press_ai_generate',
-            post_id: currentPostId,
+            post_id: String(currentPostId), // Ensure it's a string
             nonce: audioPressAI.nonce
         };
         

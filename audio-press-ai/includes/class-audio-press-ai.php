@@ -335,15 +335,19 @@ class Audio_Press_AI {
             return;
         }
         
-        // Sanitize post ID
+        // Sanitize post ID - allow 0 for new posts (auto-draft)
         $post_id = absint($post->ID);
-        if (!$post_id) {
-            return;
-        }
+        // Don't return early for new posts - we still want to show the meta box
         
-        $audio_id = absint(get_post_meta($post_id, '_audio_press_mp3_id', true));
-        $audio_url = $audio_id ? esc_url(wp_get_attachment_url($audio_id)) : '';
-        $saved_language = get_post_meta($post_id, '_audio_press_ai_language', true);
+        // Only get meta if post ID is valid (not 0)
+        $audio_id = 0;
+        $audio_url = '';
+        $saved_language = '';
+        if ($post_id > 0) {
+            $audio_id = absint(get_post_meta($post_id, '_audio_press_mp3_id', true));
+            $audio_url = $audio_id ? esc_url(wp_get_attachment_url($audio_id)) : '';
+            $saved_language = get_post_meta($post_id, '_audio_press_ai_language', true);
+        }
         
         wp_nonce_field('audio_press_ai_meta_box', 'audio_press_ai_nonce');
         
@@ -476,7 +480,7 @@ class Audio_Press_AI {
         }
         
         // Validate and sanitize post ID
-        if (!isset($_POST['post_id'])) {
+        if (!isset($_POST['post_id']) || empty($_POST['post_id'])) {
             wp_send_json_error(array('message' => __('Post ID is required', 'audio-press-ai')));
         }
         
