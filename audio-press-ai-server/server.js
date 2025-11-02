@@ -5,7 +5,14 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { franc } = require('franc');
+// franc is an ES Module, so we'll import it dynamically
+let francModule = null;
+async function getFranc() {
+    if (!francModule) {
+        francModule = await import('franc');
+    }
+    return francModule.franc || francModule.default || francModule;
+}
 
 // Load .env file (if exists)
 const dotenvResult = require('dotenv').config();
@@ -319,9 +326,9 @@ function incrementGenerateCount(licenseKey, wpUserId = null) {
  * 
  * @param {string} text - Text to detect language for
  * @param {string} hintLang - Optional hint language (e.g., 'pt_PT', 'pt_BR', 'nl_BE')
- * @returns {string} Language code
+ * @returns {Promise<string>} Language code
  */
-function detectLanguage(text, hintLang) {
+async function detectLanguage(text, hintLang) {
     // Remove excessive whitespace but keep some structure for better detection
     const cleanText = (text || '').trim().replace(/\s+/g, ' ');
     
@@ -333,7 +340,7 @@ function detectLanguage(text, hintLang) {
     try {
         // Use franc for language detection
         // franc returns ISO 639-3 code (3 letters) or 'und' (undefined) if unsure
-        // franc is synchronous, no need for await
+        const franc = await getFranc();
         const detectedCode = franc(cleanText, { minLength: 10 });
         
         // franc may return 'und' (undefined) for very short or mixed text
@@ -429,7 +436,7 @@ function detectLanguage(text, hintLang) {
  * Get model path for a language
  * Returns { modelPath, language } or throws error if language not supported
  */
-function getModelForLanguage(text, hintLang) {
+async function getModelForLanguage(text, hintLang) {
     // if client explicitly requested a supported language, prefer it
     if (hintLang && PIPER_MODELS[hintLang]) {
       const mp = PIPER_MODELS[hintLang];
@@ -437,7 +444,7 @@ function getModelForLanguage(text, hintLang) {
       return { modelPath: mp, language: hintLang };
     }
   
-    const language = detectLanguage(text, hintLang);
+    const language = await detectLanguage(text, hintLang);
     const modelPath = PIPER_MODELS[language];
   
     if (!modelPath) {
@@ -477,7 +484,7 @@ function runPiper(text, modelPath, outPath) {
 }
 
 async function generateAudioWithPiper(text, hintLang) {
-    const { modelPath, language } = getModelForLanguage(text, hintLang);
+    const { modelPath, language } = await getModelForLanguage(text, hintLang);
     const tempFilePath = path.join('/tmp', `piper_out_${Date.now()}_${Math.floor(Math.random()*1000)}.wav`);
   
     try {
@@ -503,7 +510,7 @@ app.post('/detect-language', async (req, res) => {
       if (!text || typeof text !== 'string') {
         return res.status(400).json({ error: 'Text is required' });
       }
-      const detectedLanguage = detectLanguage(text, langHint);
+      const detectedLanguage = await detectLanguage(text, langHint);
   
       const availableLanguages = Object.keys(PIPER_MODELS).filter(l => PIPER_MODELS[l]);
       const languageNames = { 
