@@ -186,8 +186,18 @@ function generateFSAuthorization(resourceUrl, method, body) {
 
 /**
  * Validate license with Freemius using FS Authorization
+ * Note: This function should NOT be called when TEST_MODE is active
  */
 async function validateFreemiusLicense(licenseKey) {
+    // Safety check: if TEST_MODE is active, don't call Freemius
+    if (TEST_MODE || licenseKey === 'TEST' || licenseKey === TEST_LICENSE_KEY) {
+        console.log('⚠️  WARNING: validateFreemiusLicense was called with TEST_MODE active. Returning test validation.');
+        return {
+            valid: true,
+            license: { is_active: true, test_mode: true }
+        };
+    }
+    
     try {
         const resourceUrl = `:/developers/${FREEMIUS_DEVELOPER_ID}/plugins/${FREEMIUS_PLUGIN_ID}/licenses/validate.json`;
         const url = `${FREEMIUS_API_URL}/${FREEMIUS_DEVELOPER_ID}/plugins/${FREEMIUS_PLUGIN_ID}/licenses/validate.json`;
@@ -547,18 +557,24 @@ app.post('/generate', async (req, res) => {
         const textLength = text.length;
         
         // Step 1: Validate license with Freemius (או מצב בדיקה)
-        console.log(`Validating license: ${license_key.substring(0, 8)}...`);
-        
-        // מצב בדיקה - דלג על בדיקת Freemius אם זה TEST_MODE
+        // מצב בדיקה - דלג על בדיקת Freemius אם זה TEST_MODE או license_key הוא "TEST"
         // ב-TEST_MODE, אנחנו לא מנסים להתחבר ל-Freemius בכלל
         let validation;
-        if (TEST_MODE) {
-            console.log('⚠️  TEST MODE: Skipping Freemius validation (Freemius is disabled)');
+        const isTestKey = license_key === 'TEST' || license_key === TEST_LICENSE_KEY;
+        const shouldSkipValidation = TEST_MODE || isTestKey;
+        
+        if (shouldSkipValidation) {
+            if (TEST_MODE) {
+                console.log('⚠️  TEST MODE: Skipping Freemius validation (Freemius is disabled)');
+            } else {
+                console.log('⚠️  TEST KEY detected: Skipping Freemius validation');
+            }
             validation = {
                 valid: true,
                 license: { is_active: true, test_mode: true }
             };
         } else {
+            console.log(`Validating license: ${license_key.substring(0, 8)}...`);
             validation = await validateFreemiusLicense(license_key);
             
             if (!validation.valid) {
@@ -722,9 +738,12 @@ app.post('/usage', async (req, res) => {
         }
         
         // Validate license (או מצב בדיקה)
-        // ב-TEST_MODE, אנחנו לא מנסים להתחבר ל-Freemius בכלל
+        // ב-TEST_MODE או עם TEST key, אנחנו לא מנסים להתחבר ל-Freemius בכלל
         let validation;
-        if (TEST_MODE) {
+        const isTestKey = license_key === 'TEST' || license_key === TEST_LICENSE_KEY;
+        const shouldSkipValidation = TEST_MODE || isTestKey;
+        
+        if (shouldSkipValidation) {
             validation = {
                 valid: true,
                 license: { is_active: true, test_mode: true }
