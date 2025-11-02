@@ -214,11 +214,13 @@ jQuery(document).ready(function($) {
                     var detectedLangName = response.data.languageName || detectedLang;
                     
                     // Show language selector UI
-                    var html = '<div id="audio-press-ai-language-selector" style="margin-bottom: 10px; padding: 10px; background: #f0f0f1; border-radius: 4px;">';
-                    html += '<label style="display: block; margin-bottom: 5px; font-weight: 600;">';
-                    html += 'Detected Language: <span style="color: #2271b1;">' + detectedLangName + '</span>';
-                    html += '</label>';
-                    html += '<select id="audio-press-ai-language-select" style="width: 100%; margin-bottom: 5px;">';
+                    var html = '<div id="audio-press-ai-language-selector" style="margin-bottom: 10px; padding: 12px; background: #f0f6fc; border: 1px solid #c3c4c7; border-radius: 4px;">';
+                    html += '<div style="padding: 8px 10px; background: #fff; border: 1px solid #c3c4c7; border-radius: 4px; margin-bottom: 10px; font-size: 12px;">';
+                    html += '<span style="color: #50575e; font-weight: 600;">Detected Language:</span>';
+                    html += '<strong style="color: #2271b1; margin-left: 8px; font-size: 13px;">' + detectedLangName + '</strong>';
+                    html += '</div>';
+                    html += '<label style="display: block; margin-bottom: 6px; font-weight: 600; color: #1d2327;">Select Language:</label>';
+                    html += '<select id="audio-press-ai-language-select" style="width: 100%; margin-bottom: 8px; padding: 6px;">';
                     
                     // Add options
                     languages.forEach(function(lang) {
@@ -228,7 +230,7 @@ jQuery(document).ready(function($) {
                     });
                     
                     html += '</select>';
-                    html += '<small style="color: #50575e; display: block;">Change language if detection is incorrect</small>';
+                    html += '<small style="color: #50575e; display: block; margin-bottom: 10px; font-style: italic;">Change language if detection is incorrect</small>';
                     html += '<div style="margin-top: 8px;">';
                     html += '<button type="button" class="button button-primary" id="audio-press-ai-generate-with-lang" style="width: 100%;">Generate Audio</button>';
                     html += '</div>';
@@ -304,8 +306,32 @@ jQuery(document).ready(function($) {
             data: ajaxData,
             success: function(response) {
                 if (response.success) {
+                    // Language names mapping
+                    var languageNames = {
+                        'en': 'English',
+                        'es': 'Español (Spanish)',
+                        'pt_PT': 'Português PT (Portuguese Portugal)',
+                        'pt_BR': 'Português BR (Portuguese Brazil)',
+                        'de': 'Deutsch (German)',
+                        'nl_NL': 'Nederlands NL (Dutch Netherlands)',
+                        'nl_BE': 'Nederlands BE (Dutch Belgium)',
+                        'he': 'עברית (Hebrew)',
+                        'ar': 'ערבית (Arabic)',
+                        'ru': 'Русский (Russian)',
+                        'zh': '中文/日本語/한국어 (CJK)'
+                    };
+                    
                     // Replace container content with custom player
                     var html = '<div id="audio-press-ai-player-wrapper">';
+                    
+                    // Show detected language if available
+                    if (response.data.language && languageNames[response.data.language]) {
+                        html += '<div style="padding: 8px 10px; background: #f0f6fc; border: 1px solid #c3c4c7; border-radius: 4px; margin-bottom: 10px; font-size: 12px;">';
+                        html += '<span style="color: #50575e;">Language:</span>';
+                        html += '<strong style="color: #2271b1; margin-left: 5px;">' + languageNames[response.data.language] + '</strong>';
+                        html += '</div>';
+                    }
+                    
                     html += createCustomPlayer(response.data.audio_url);
                     html += '<div style="display: flex; gap: 5px; margin-top: 10px;">';
                     html += '<button type="button" class="button button-secondary" id="audio-press-ai-regenerate">Regenerate Audio</button>';

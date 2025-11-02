@@ -1,14 +1,16 @@
 /* Modern Custom Audio Player for Frontend - Compact Version */
 .audio-press-ai-player-wrapper {
     margin: 15px 0;
-    padding: 10px 12px;
-    max-width: 100%;
-    width: 100%;
+    padding: 8px 12px;
+    max-width: 350px;
+    width: auto;
+    display: inline-block;
     background: #f8f8f8;
     border: 1px solid #e0e0e0;
     border-radius: 6px;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
     text-align: left;
+    direction: ltr; /* Force LTR for player controls */
 }
 
 .audio-press-ai-player-wrapper .audio-label {
@@ -26,6 +28,7 @@
     align-items: center;
     gap: 10px;
     margin-bottom: 0;
+    flex-direction: row; /* Ensure play button is on the left */
 }
 
 .audio-press-ai-custom-player .play-pause-btn {
@@ -145,6 +148,7 @@
         margin: 12px 0;
         padding: 8px 10px;
         border-radius: 5px;
+        max-width: 300px;
     }
     
     .audio-press-ai-custom-player .play-pause-btn {
@@ -160,8 +164,9 @@
 
 @media (max-width: 480px) {
     .audio-press-ai-player-wrapper {
-        padding: 8px;
+        padding: 6px 8px;
         margin: 10px 0;
+        max-width: 280px;
     }
     
     .audio-press-ai-custom-player .play-pause-btn {

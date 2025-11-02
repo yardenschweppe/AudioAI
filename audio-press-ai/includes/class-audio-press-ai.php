@@ -343,6 +343,7 @@ class Audio_Press_AI {
         
         $audio_id = absint(get_post_meta($post_id, '_audio_press_mp3_id', true));
         $audio_url = $audio_id ? esc_url(wp_get_attachment_url($audio_id)) : '';
+        $saved_language = get_post_meta($post_id, '_audio_press_ai_language', true);
         
         wp_nonce_field('audio_press_ai_meta_box', 'audio_press_ai_nonce');
         
@@ -371,7 +372,30 @@ class Audio_Press_AI {
             <?php endif; ?>
             
             <?php if ($audio_url): ?>
+                <?php 
+                // Get language names mapping
+                $language_names = array(
+                    'en' => 'English',
+                    'es' => 'Español (Spanish)',
+                    'pt_PT' => 'Português PT (Portuguese Portugal)',
+                    'pt_BR' => 'Português BR (Portuguese Brazil)',
+                    'de' => 'Deutsch (German)',
+                    'nl_NL' => 'Nederlands NL (Dutch Netherlands)',
+                    'nl_BE' => 'Nederlands BE (Dutch Belgium)',
+                    'he' => 'עברית (Hebrew)',
+                    'ar' => 'ערבית (Arabic)',
+                    'ru' => 'Русский (Russian)',
+                    'zh' => '中文/日本語/한국어 (CJK)'
+                );
+                $detected_language_name = isset($language_names[$saved_language]) ? $language_names[$saved_language] : ($saved_language ? $saved_language : null);
+                ?>
                 <div id="audio-press-ai-player-wrapper">
+                    <?php if ($detected_language_name): ?>
+                        <div style="padding: 8px 10px; background: #f0f6fc; border: 1px solid #c3c4c7; border-radius: 4px; margin-bottom: 10px; font-size: 12px;">
+                            <span style="color: #50575e;"><?php _e('Language:', 'audio-press-ai'); ?></span>
+                            <strong style="color: #2271b1; margin-left: 5px;"><?php echo esc_html($detected_language_name); ?></strong>
+                        </div>
+                    <?php endif; ?>
                     <div class="audio-press-ai-custom-player">
                         <div class="player-controls">
                             <button class="play-pause-btn paused" id="audio-press-ai-play-pause" type="button"></button>
@@ -681,11 +705,39 @@ class Audio_Press_AI {
         // Save attachment ID to post meta
         update_post_meta($post_id, '_audio_press_mp3_id', $attachment_id);
         
+        // Save language that was used (detected or selected)
+        if ($language) {
+            update_post_meta($post_id, '_audio_press_ai_language', $language);
+        } else {
+            // If no language was provided, detect it from content
+            $clean_content = wp_strip_all_tags($content);
+            $clean_content = do_shortcode($clean_content);
+            $clean_content = wp_strip_all_tags($clean_content);
+            
+            // Call detect endpoint to get language
+            $detect_response = wp_remote_request($api_server_url . '/detect-language', array(
+                'method' => 'POST',
+                'headers' => array('Content-Type' => 'application/json'),
+                'body' => json_encode(array('text' => $clean_content), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'timeout' => 10,
+                'sslverify' => true,
+            ));
+            
+            if (!is_wp_error($detect_response)) {
+                $detect_body = wp_remote_retrieve_body($detect_response);
+                $detect_data = json_decode($detect_body, true);
+                if (isset($detect_data['detected'])) {
+                    update_post_meta($post_id, '_audio_press_ai_language', $detect_data['detected']);
+                }
+            }
+        }
+        
         wp_send_json_success(array(
             'audio_url' => wp_get_attachment_url($attachment_id),
             'message' => __('Audio generated successfully!', 'audio-press-ai'),
             'usage' => isset($response_data['usage']) ? $response_data['usage'] : null,
-            'generate_count' => isset($response_data['usage']['generate_count']) ? $response_data['usage']['generate_count'] : null
+            'generate_count' => isset($response_data['usage']['generate_count']) ? $response_data['usage']['generate_count'] : null,
+            'language' => $language ? $language : (isset($detect_data['detected']) ? $detect_data['detected'] : null)
         ));
     }
     
@@ -724,6 +776,7 @@ class Audio_Press_AI {
             if ($attachment && $attachment->post_parent == $post_id) {
                 wp_delete_attachment($audio_id, true);
                 delete_post_meta($post_id, '_audio_press_mp3_id');
+                delete_post_meta($post_id, '_audio_press_ai_language'); // Delete language info too
             }
         }
         
@@ -939,8 +992,7 @@ class Audio_Press_AI {
         
         // Build custom player HTML with proper escaping
         $unique_id = 'audio-press-ai-' . $post_id;
-        $player_html = '<div class="audio-press-ai-player-wrapper">';
-        $player_html .= '<span class="audio-label">' . esc_html__('האזנה לפוסט', 'audio-press-ai') . '</span>';
+        $player_html = '<div class="audio-press-ai-player-wrapper" style="direction: ltr;">';
         $player_html .= '<div class="audio-press-ai-custom-player">';
         $player_html .= '<div class="player-controls">';
         $player_html .= '<button class="play-pause-btn paused" id="' . esc_attr($unique_id) . '-play-pause" type="button" aria-label="Play/Pause"></button>';
