@@ -98,6 +98,63 @@ jQuery(document).ready(function($) {
         }
     });
     
+    // Listen for Gutenberg editor post save events (optimized - only check on save)
+    if (window.wp && window.wp.data && window.wp.data.subscribe) {
+        try {
+            var lastCheckedPostId = postId;
+            var checkInterval = null;
+            
+            // Throttle the check to avoid too many updates
+            var checkGutenbergPostId = function() {
+                var editor = window.wp.data.select('core/editor');
+                if (editor && editor.getCurrentPostId) {
+                    var gutenbergPostId = editor.getCurrentPostId();
+                    if (gutenbergPostId && gutenbergPostId !== 0) {
+                        var newPostId = String(gutenbergPostId);
+                        if (newPostId !== lastCheckedPostId && newPostId !== '0') {
+                            lastCheckedPostId = newPostId;
+                            postId = newPostId;
+                            // Update container's data attribute
+                            if (container.length) {
+                                container.attr('data-post-id', postId);
+                            }
+                        }
+                    }
+                }
+            };
+            
+            // Check immediately
+            checkGutenbergPostId();
+            
+            // Subscribe to editor changes, but throttle checks
+            window.wp.data.subscribe(function() {
+                if (!checkInterval) {
+                    checkInterval = setTimeout(function() {
+                        checkGutenbergPostId();
+                        checkInterval = null;
+                    }, 1000); // Check every second at most
+                }
+            });
+        } catch(e) {
+            // Gutenberg not available or not loaded yet
+        }
+    }
+    
+    // Also listen for form submission (for classic editor) to catch when post is saved
+    $(document).on('submit', '#post', function() {
+        // Small delay to let WordPress update the post ID field
+        setTimeout(function() {
+            var newPostId = getPostId();
+            if (newPostId && newPostId !== postId) {
+                postId = newPostId;
+                // Update container's data attribute
+                if (container.length) {
+                    container.attr('data-post-id', postId);
+                }
+            }
+        }, 500);
+    });
+    
     // Format time helper
     function formatTime(seconds) {
         if (isNaN(seconds) || !isFinite(seconds)) return '0:00';
@@ -312,6 +369,19 @@ jQuery(document).ready(function($) {
     function detectLanguageAndShowSelector(callback) {
         var currentPostId = getPostId();
         if (!currentPostId) {
+            // Show error message if post ID is missing
+            statusDiv.show();
+            statusDiv.css('border-left-color', '#d63638'); // Red for error
+            statusText.text('❌ Post ID is required. Please save the post first as a draft or publish it.');
+            
+            // Restore button if it was disabled
+            restoreButton(generateBtn);
+            
+            setTimeout(function() {
+                statusDiv.hide();
+                statusDiv.css('border-left-color', '#2271b1'); // Reset to blue
+            }, 5000);
+            
             if (callback) callback();
             return;
         }
@@ -334,7 +404,7 @@ jQuery(document).ready(function($) {
                 if (response.success && response.data) {
                     var html = createLanguageSelectorHTML(response);
                     
-                    // Replace generate button with language selector
+                    // Replace generate button with language selector (only hide AFTER successful detection)
                     if (generateBtn.length) {
                         generateBtn.hide().after(html);
                     } else {
@@ -349,13 +419,47 @@ jQuery(document).ready(function($) {
                     
                     if (callback) callback();
                 } else {
+                    // If detection fails, show error and restore button
+                    statusDiv.show();
+                    statusDiv.css('border-left-color', '#d63638'); // Red for error
+                    statusText.text('❌ Language detection failed. Proceeding with generation...');
+                    restoreButton(generateBtn);
+                    
+                    setTimeout(function() {
+                        statusDiv.hide();
+                        statusDiv.css('border-left-color', '#2271b1'); // Reset to blue
+                    }, 3000);
+                    
                     // If detection fails, just proceed with generation
                     if (callback) callback();
                 }
             },
-            error: function() {
-                statusDiv.hide();
-                // If detection fails, just proceed with generation
+            error: function(xhr, status, error) {
+                statusDiv.show();
+                statusDiv.css('border-left-color', '#d63638'); // Red for error
+                
+                // Check if error is about missing post ID
+                var errorMessage = '❌ Error detecting language. ';
+                if (xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+                    if (xhr.responseJSON.data.message.indexOf('Post ID') !== -1 || 
+                        xhr.responseJSON.data.message.indexOf('post id') !== -1) {
+                        errorMessage = '❌ Post ID is required. Please save the post first as a draft or publish it.';
+                    } else {
+                        errorMessage += xhr.responseJSON.data.message;
+                    }
+                } else {
+                    errorMessage += 'Please try again.';
+                }
+                
+                statusText.text(errorMessage);
+                restoreButton(generateBtn);
+                
+                setTimeout(function() {
+                    statusDiv.hide();
+                    statusDiv.css('border-left-color', '#2271b1'); // Reset to blue
+                }, 5000);
+                
+                // If detection fails, don't proceed - let user try again
                 if (callback) callback();
             }
         });
@@ -461,11 +565,27 @@ jQuery(document).ready(function($) {
                 restoreButton($('#audio-press-ai-regenerate'));
                 restoreButton(regenerateBtn);
             } else {
-                // Restore generate button
+                // Restore generate button - make sure it's visible and enabled
                 if (generateBtn.length) {
                     generateBtn.show();
+                    restoreButton(generateBtn);
+                } else {
+                    // If button doesn't exist (was removed), recreate it
+                    container.prepend(
+                        '<button type="button" class="button button-primary button-large" id="audio-press-ai-generate" style="width: 100%;">' +
+                        'Generate Audio Version (AI)' +
+                        '</button>'
+                    );
+                    generateBtn = $('#audio-press-ai-generate');
+                    generateBtn.on('click', function() {
+                        detectLanguageAndShowSelector(function() {
+                            // After detection, the generate button is replaced with language selector
+                        });
+                    });
                 }
             }
+            // Reset selected language
+            selectedLanguage = null;
         });
     }
     
@@ -474,7 +594,20 @@ jQuery(document).ready(function($) {
         var currentPostId = getPostId();
         
         if (!currentPostId) {
-            alert('Post ID not found. Please save the post first.');
+            // Show error message instead of alert
+            statusDiv.show();
+            statusDiv.css('border-left-color', '#d63638'); // Red for error
+            statusText.text('❌ Post ID is required. Please save the post first as a draft or publish it.');
+            
+            // Restore all buttons
+            restoreButton(generateBtn);
+            restoreButton(regenerateBtn);
+            restoreButton($('#audio-press-ai-generate-with-lang'));
+            
+            setTimeout(function() {
+                statusDiv.hide();
+                statusDiv.css('border-left-color', '#2271b1'); // Reset to blue
+            }, 5000);
             return;
         }
         
@@ -583,8 +716,20 @@ jQuery(document).ready(function($) {
                         statusDiv.css('border-left-color', '#2271b1'); // Reset to blue
                     }, 7000);
                 } else {
-                    statusText.text('❌ ' + (response.data.message || 'Error generating audio'));
+                    var errorMsg = '❌ ' + (response.data && response.data.message ? response.data.message : 'Error generating audio');
+                    statusText.text(errorMsg);
                     statusDiv.css('border-left-color', '#d63638'); // Red for error
+                    
+                    // If error is about post ID, restore generate button visibility
+                    if (errorMsg.indexOf('Post ID') !== -1 || errorMsg.indexOf('post id') !== -1) {
+                        // Remove language selector if it exists
+                        $('#audio-press-ai-language-selector').remove();
+                        // Restore generate button
+                        if (generateBtn.length && !generateBtn.is(':visible')) {
+                            generateBtn.show();
+                        }
+                    }
+                    
                     restoreButton(generateBtn);
                     restoreButton(regenerateBtn);
                     restoreButton($('#audio-press-ai-generate-with-lang'));
@@ -596,8 +741,25 @@ jQuery(document).ready(function($) {
                     }, 5000);
                 }
             },
-            error: function() {
-                statusText.text('❌ Network error. Please try again.');
+            error: function(xhr, status, error) {
+                var errorMsg = '❌ Network error. Please try again.';
+                
+                // Check if error response contains message about post ID
+                if (xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+                    errorMsg = '❌ ' + xhr.responseJSON.data.message;
+                    
+                    // If error is about post ID, restore generate button visibility
+                    if (errorMsg.indexOf('Post ID') !== -1 || errorMsg.indexOf('post id') !== -1) {
+                        // Remove language selector if it exists
+                        $('#audio-press-ai-language-selector').remove();
+                        // Restore generate button
+                        if (generateBtn.length && !generateBtn.is(':visible')) {
+                            generateBtn.show();
+                        }
+                    }
+                }
+                
+                statusText.text(errorMsg);
                 statusDiv.css('border-left-color', '#d63638'); // Red for error
                 restoreButton(generateBtn);
                 restoreButton(regenerateBtn);

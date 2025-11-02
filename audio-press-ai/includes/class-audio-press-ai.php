@@ -996,7 +996,7 @@ class Audio_Press_AI {
         
         // Build custom player HTML with proper escaping
         $unique_id = 'audio-press-ai-' . $post_id;
-        $player_html = '<div class="audio-press-ai-player-wrapper" style="direction: ltr;">';
+        $player_html = '<div class="audio-press-ai-player-wrapper" data-post-id="' . esc_attr($post_id) . '" style="direction: ltr;">';
         $player_html .= '<div class="audio-press-ai-custom-player">';
         $player_html .= '<div class="player-controls">';
         $player_html .= '<button class="play-pause-btn paused" id="' . esc_attr($unique_id) . '-play-pause" type="button" aria-label="Play/Pause"></button>';
@@ -1154,9 +1154,11 @@ class Audio_Press_AI {
                 true
             );
             
+            $post_id = isset($_GET['post']) ? absint($_GET['post']) : 0; // כשעורכים פוסט קיים
             wp_localize_script('audio-press-ai-admin', 'audioPressAI', array(
-                'ajaxUrl' => esc_url(admin_url('admin-ajax.php')),
-                'nonce' => wp_create_nonce('audio_press_ai_meta_box'),
+                'ajaxUrl'    => esc_url(admin_url('admin-ajax.php')),
+                'nonce'      => wp_create_nonce('audio_press_ai_meta_box'),
+                'postId'     => $post_id, // <<< חשוב: מזהה הפוסט עבור ה-AJAX
                 'generating' => esc_html__('Generating audio... This may take 30 seconds...', 'audio-press-ai'),
             ));
             
