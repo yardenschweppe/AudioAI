@@ -2,9 +2,10 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const mysql = require('mysql2/promise');
 // franc is an ES Module, so we'll import it dynamically
 let francModule = null;
 async function getFranc() {
@@ -55,7 +56,22 @@ const PIPER_MODELS = {
 };
 
 const PIPER_BIN = process.env.PIPER_BIN || '/opt/piper/.venv/bin/piper'; // נתיב אבסולוטי
-const MONTHLY_CHAR_LIMIT = 200000; // 200K characters per month
+const MAX_CHARS_SPLIT_THRESHOLD = Number(process.env.MAX_CHARS_SPLIT_THRESHOLD || 3000); // פיצול טקסט ארוך לעיבוד בלבד
+
+// MySQL Database Configuration
+const DB_CONFIG = {
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'audio_press_ai',
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+};
+
+const DB_TABLE_NAME = process.env.DB_TABLE_NAME || 'audio_press_usage';
+let dbConnection = null;
+let dbPool = null;
 
 // Development/Test Mode - מאפשר לנסות בלי Freemius
 // הגדר TEST_MODE=true ב-.env או הפעל עם NODE_ENV=development כדי לדלג על בדיקת Freemius לחלוטין
@@ -103,8 +119,119 @@ console.log('');
 
 // Note: Audio files are sent directly to WordPress, no storage needed on this server
 
-// In-memory database for metering (in production, use Redis or PostgreSQL)
-const usageDB = new Map(); // license_key -> { month: '2025-01', chars_used: 0, generate_count: 0, wp_user_ids: Set() }
+// In-memory cache for usage tracking (backed by MySQL)
+// license_key -> { month: '2025-01', posts_used: Set<post_id>, trial_post_id: string|null, generate_count: number, chars_used: number }
+if (!global.usageDB) global.usageDB = new Map();
+
+/**
+ * Initialize MySQL connection and create table if needed
+ */
+async function initDatabase() {
+    try {
+        // Create database if it doesn't exist
+        const tempConfig = { ...DB_CONFIG };
+        delete tempConfig.database;
+        const tempConnection = await mysql.createConnection(tempConfig);
+        await tempConnection.query(`CREATE DATABASE IF NOT EXISTS \`${DB_CONFIG.database}\``);
+        await tempConnection.end();
+
+        // Create connection pool
+        dbPool = mysql.createPool(DB_CONFIG);
+
+        // Create table if it doesn't exist
+        const createTableSQL = `
+            CREATE TABLE IF NOT EXISTS \`${DB_TABLE_NAME}\` (
+                \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+                \`license_key\` VARCHAR(255) NOT NULL,
+                \`month\` VARCHAR(7) NOT NULL,
+                \`posts_used\` JSON NOT NULL,
+                \`trial_post_id\` VARCHAR(255) DEFAULT NULL,
+                \`generate_count\` INT DEFAULT 0,
+                \`chars_used\` BIGINT DEFAULT 0,
+                \`plan\` VARCHAR(50) DEFAULT NULL,
+                \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                \`updated_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY \`license_month\` (\`license_key\`, \`month\`),
+                KEY \`idx_license_key\` (\`license_key\`),
+                KEY \`idx_month\` (\`month\`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `;
+        
+        await dbPool.query(createTableSQL);
+        console.log('✅ Database initialized successfully');
+        return true;
+    } catch (error) {
+        console.error('⚠️  Database initialization failed:', error.message);
+        console.error('   Using in-memory storage only (data will be lost on restart)');
+        dbPool = null;
+        return false;
+    }
+}
+
+/**
+ * Load usage data from database
+ */
+async function loadUsageFromDB(licenseKey, month) {
+    if (!dbPool) return null;
+    
+    try {
+        const [rows] = await dbPool.query(
+            `SELECT * FROM \`${DB_TABLE_NAME}\` WHERE license_key = ? AND month = ?`,
+            [licenseKey, month]
+        );
+        
+        if (rows.length === 0) return null;
+        
+        const row = rows[0];
+        return {
+            month: row.month,
+            posts_used: new Set(JSON.parse(row.posts_used || '[]')),
+            trial_post_id: row.trial_post_id,
+            generate_count: row.generate_count || 0,
+            chars_used: row.chars_used || 0,
+            plan: row.plan
+        };
+    } catch (error) {
+        console.error('Error loading usage from DB:', error.message);
+        return null;
+    }
+}
+
+/**
+ * Save usage data to database
+ */
+async function saveUsageToDB(licenseKey, usage) {
+    if (!dbPool) return false;
+    
+    try {
+        const postsUsedArray = Array.from(usage.posts_used || []);
+        
+        await dbPool.query(
+            `INSERT INTO \`${DB_TABLE_NAME}\` 
+             (license_key, month, posts_used, trial_post_id, generate_count, chars_used, plan)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+             posts_used = VALUES(posts_used),
+             trial_post_id = VALUES(trial_post_id),
+             generate_count = VALUES(generate_count),
+             chars_used = VALUES(chars_used),
+             plan = VALUES(plan)`,
+            [
+                licenseKey,
+                usage.month,
+                JSON.stringify(postsUsedArray),
+                usage.trial_post_id,
+                usage.generate_count || 0,
+                usage.chars_used || 0,
+                usage.plan || null
+            ]
+        );
+        return true;
+    } catch (error) {
+        console.error('Error saving usage to DB:', error.message);
+        return false;
+    }
+}
 
 /**
  * Get product info from Freemius (helper function to find Developer ID)
@@ -234,87 +361,87 @@ async function validateFreemiusLicense(licenseKey) {
 }
 
 /**
- * Check and update character usage (metering)
+ * Resolve plan name from Freemius validation or environment
  */
-function checkAndUpdateUsage(licenseKey, textLength) {
-    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
-    
-    if (!usageDB.has(licenseKey)) {
-        usageDB.set(licenseKey, { 
-            month: currentMonth, 
-            chars_used: 0,
-            generate_count: 0,
-            wp_user_ids: new Set()
-        });
+function resolvePlan(validation) {
+    // אם יש test_mode או אין תכנית בתשלום → trial
+    if (validation?.license?.test_mode || !validation?.license?.plan?.name) {
+        return 'trial';
     }
-    
-    const usage = usageDB.get(licenseKey);
-    
-    // Reset if new month
-    if (usage.month !== currentMonth) {
-        usage.month = currentMonth;
-        usage.chars_used = 0;
-        usage.generate_count = 0;
-        usage.wp_user_ids = new Set();
-    }
-    
-    // Check if limit exceeded
-    if (usage.chars_used + textLength > MONTHLY_CHAR_LIMIT) {
-        return {
-            allowed: false,
-            used: usage.chars_used,
-            limit: MONTHLY_CHAR_LIMIT,
-            remaining: Math.max(0, MONTHLY_CHAR_LIMIT - usage.chars_used),
-            generate_count: usage.generate_count || 0
-        };
-    }
-    
-    // Update usage
-    usage.chars_used += textLength;
-    
-    return {
-        allowed: true,
-        used: usage.chars_used,
-        limit: MONTHLY_CHAR_LIMIT,
-        remaining: MONTHLY_CHAR_LIMIT - usage.chars_used,
-        generate_count: usage.generate_count || 0
-    };
+    // מ-Freemius; ב-TEST_MODE או ללא תכנית → trial
+    const name = (validation?.license?.plan?.name || 'trial').toLowerCase();
+    return name;
 }
 
 /**
- * Increment generate counter for a license
+ * Get plan limit (number of posts per month)
  */
-function incrementGenerateCount(licenseKey, wpUserId = null) {
+function getPlanLimit(plan) {
+    const L = {
+        trial: Number(process.env.PLAN_LIMIT_TRIAL || 1),
+        starter: Number(process.env.PLAN_LIMIT_STARTER || 50),
+        creator: Number(process.env.PLAN_LIMIT_CREATOR || 150),
+        pro: Number(process.env.PLAN_LIMIT_PRO || 500),
+        agency: Number(process.env.PLAN_LIMIT_AGENCY || 2000),
+        unlimited: Infinity,
+    };
+    return L[plan] ?? L[process.env.DEFAULT_PLAN || 'starter'];
+}
+
+/**
+ * Get usage data for a license key (create if doesn't exist, reset if new month)
+ * Loads from database if available, otherwise uses in-memory cache
+ */
+async function getUsage(licenseKey, plan = null) {
     const currentMonth = new Date().toISOString().slice(0, 7);
+    if (!global.usageDB) global.usageDB = new Map();
     
-    if (!usageDB.has(licenseKey)) {
-        usageDB.set(licenseKey, { 
+    const cacheKey = `${licenseKey}_${currentMonth}`;
+    
+    // Check cache first
+    if (global.usageDB.has(cacheKey)) {
+        return global.usageDB.get(cacheKey);
+    }
+    
+    // Try to load from database
+    let usage = await loadUsageFromDB(licenseKey, currentMonth);
+    
+    // If not found in DB, create new usage object
+    if (!usage) {
+        usage = { 
             month: currentMonth, 
+            posts_used: new Set(), 
+            trial_post_id: null, 
+            generate_count: 0, 
             chars_used: 0,
-            generate_count: 0,
-            wp_user_ids: new Set()
-        });
+            plan: plan
+        };
+        // Save to DB in background
+        saveUsageToDB(licenseKey, usage).catch(err => console.error('Background save failed:', err));
     }
     
-    const usage = usageDB.get(licenseKey);
-    
-    // Reset if new month
-    if (usage.month !== currentMonth) {
-        usage.month = currentMonth;
+    // Reset if new month (shouldn't happen, but safety check)
+    if (usage.month !== currentMonth) { 
+        usage.month = currentMonth; 
+        usage.posts_used = new Set(); 
+        usage.generate_count = 0; 
         usage.chars_used = 0;
-        usage.generate_count = 0;
-        usage.wp_user_ids = new Set();
+        if (plan) usage.plan = plan;
     }
     
-    // Track WP user ID if provided
-    if (wpUserId) {
-        usage.wp_user_ids.add(wpUserId);
-    }
+    // Cache in memory
+    global.usageDB.set(cacheKey, usage);
     
-    // Increment counter
-    usage.generate_count = (usage.generate_count || 0) + 1;
-    
-    return usage.generate_count;
+    return usage;
+}
+
+/**
+ * Update usage data (saves to DB and updates cache)
+ */
+async function updateUsage(licenseKey, usage) {
+    const cacheKey = `${licenseKey}_${usage.month}`;
+    global.usageDB.set(cacheKey, usage);
+    await saveUsageToDB(licenseKey, usage);
 }
 
 /**
@@ -470,11 +597,30 @@ async function getModelForLanguage(text, hintLang) {
   }
 
 /**
+ * Split text into two parts if it exceeds maxLen (for processing only, not billing)
+ */
+function splitIntoTwo(text, maxLen = MAX_CHARS_SPLIT_THRESHOLD) {
+    const t = (text || '').trim();
+    if (t.length <= maxLen) return [t];
+    
+    // ננסה לפצל לשניים סביב האמצע, על גבול משפט/רווח
+    const mid = Math.floor(t.length / 2);
+    const leftCut = t.lastIndexOf('.', mid); // חפש סוף משפט שמאלה
+    const leftCut2 = t.lastIndexOf(' ', mid); // או רווח
+    
+    // בחר את החיתוך הטוב ביותר (אבל לא פחות מ-maxLen)
+    let cut = Math.max(leftCut, leftCut2);
+    if (cut < maxLen) cut = maxLen; // נפילת-גבול למקסימום
+    
+    return [t.slice(0, cut).trim(), t.slice(cut).trim()];
+}
+
+/**
  * Generate audio using Piper TTS
  */
 function runPiper(text, modelPath, outPath) {
     return new Promise((resolve, reject) => {
-        const p = spawn(PIPER_BIN, ["-m", modelPath, "-f", outPath], {
+        const p = spawn(PIPER_BIN, ["-m", modelPath, "-f", outPath, "-q"], {
             stdio: ["pipe", "ignore", "pipe"],
         });
 
@@ -489,8 +635,37 @@ function runPiper(text, modelPath, outPath) {
             }
         });
 
-        p.stdin.end(text + "\n"); // אין צורך ב-printf ואין בעיות ציטוטים בעברית
+        p.stdin.end((text || "") + "\n");
     });
+}
+
+/**
+ * Synthesize text to WAV file, splitting into two parts if needed and concatenating with ffmpeg
+ */
+async function synthToWav(text, modelPath, outFile) {
+    const parts = splitIntoTwo(text);
+    if (parts.length === 1) { 
+        await runPiper(parts[0], modelPath, outFile); 
+        return; 
+    }
+    
+    const tmpDir = `/tmp/piper_${Date.now()}`;
+    fs.mkdirSync(tmpDir, { recursive: true });
+    
+    const seg1 = path.join(tmpDir, "part1.wav");
+    const seg2 = path.join(tmpDir, "part2.wav");
+    
+    await runPiper(parts[0], modelPath, seg1);
+    await runPiper(parts[1], modelPath, seg2);
+    
+    const list = path.join(tmpDir, "list.txt");
+    fs.writeFileSync(list, `file '${seg1}'\nfile '${seg2}'\n`);
+    
+    const r = spawnSync('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', outFile], { stdio: 'inherit' });
+    
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    
+    if (r.status !== 0) throw new Error('ffmpeg concat failed');
 }
 
 async function generateAudioWithPiper(text, hintLang) {
@@ -498,7 +673,7 @@ async function generateAudioWithPiper(text, hintLang) {
     const tempFilePath = path.join('/tmp', `piper_out_${Date.now()}_${Math.floor(Math.random()*1000)}.wav`);
   
     try {
-      await runPiper(text, modelPath, tempFilePath);
+      await synthToWav(text, modelPath, tempFilePath);
       const data = fs.readFileSync(tempFilePath);
       console.log(`Piper successfully generated ${data.length} bytes using ${language} model.`);
       return data;
@@ -510,6 +685,67 @@ async function generateAudioWithPiper(text, hintLang) {
   }
 
 // Audio files are sent directly to WordPress, no storage function needed
+
+// Server limits: Concurrency, Rate-limit, Queue, Timeout
+const MAX_CONCURRENCY = Number(process.env.MAX_CONCURRENCY || 2);
+const QUEUE_MAX = Number(process.env.QUEUE_MAX || 20);
+const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS || 600000); // 10 minutes
+const PER_MIN = Number(process.env.RATE_LIMIT_PER_LICENSE_PER_MIN || 6);
+
+let running = 0;
+const q = []; // [{fn, res, rej, deadline}]
+const rl = new Map(); // license_key -> {ts, count}
+
+/**
+ * Rate limit check per license key (requests per minute)
+ */
+function rateLimit(license) {
+    const key = String(license || 'anon');
+    const now = Date.now();
+    const win = 60 * 1000;
+    const r = rl.get(key) || { ts: now, count: 0 };
+    if (now - r.ts > win) { 
+        r.ts = now; 
+        r.count = 0; 
+    }
+    if (r.count >= PER_MIN) return false;
+    r.count++; 
+    rl.set(key, r); 
+    return true;
+}
+
+/**
+ * Schedule a job with concurrency control and queue
+ */
+function schedule(jobFn) {
+    return new Promise((res, rej) => {
+        if (running < MAX_CONCURRENCY) { 
+            running++; 
+            jobFn().then(res, rej).finally(() => { 
+                running--; 
+                pump(); 
+            }); 
+        } else if (q.length < QUEUE_MAX) { 
+            q.push({ fn: jobFn, res, rej }); 
+        } else {
+            rej(new Error('Busy: try again later'));
+        }
+    });
+}
+
+/**
+ * Process queue when capacity becomes available
+ */
+function pump() { 
+    while (running < MAX_CONCURRENCY && q.length) { 
+        const j = q.shift(); 
+        running++; 
+        j.fn().then(j.res, j.rej).finally(() => { 
+            running--; 
+            pump(); 
+        }); 
+    } 
+}
 
 /**
  * Language detection endpoint
@@ -543,22 +779,27 @@ app.post('/detect-language', async (req, res) => {
  */
 app.post('/generate', async (req, res) => {
     try {
-        const { license_key, wp_user_id, text, model, voice, language } = req.body;
+        const { text, post_id, license_key, language } = req.body || {};
         
         // Validate input
         if (!license_key || !text) {
             return res.status(400).json({ error: 'Missing license_key or text' });
         }
         
+        if (!post_id) {
+            return res.status(400).json({ error: 'post_id is required' });
+        }
+        
         if (typeof text !== 'string' || text.trim().length === 0) {
             return res.status(400).json({ error: 'Text must be a non-empty string' });
         }
         
-        const textLength = text.length;
+        // Step 1: Rate limit check
+        if (!rateLimit(license_key)) {
+            return res.status(429).json({ error: 'Too many requests, slow down.' });
+        }
         
-        // Step 1: Validate license with Freemius (או מצב בדיקה)
-        // מצב בדיקה - דלג על בדיקת Freemius אם זה TEST_MODE או license_key הוא "TEST"
-        // ב-TEST_MODE, אנחנו לא מנסים להתחבר ל-Freemius בכלל
+        // Step 2: Validate license with Freemius (או מצב בדיקה)
         let validation;
         const isTestKey = license_key === 'TEST' || license_key === TEST_LICENSE_KEY;
         const shouldSkipValidation = TEST_MODE || isTestKey;
@@ -584,74 +825,119 @@ app.post('/generate', async (req, res) => {
             }
         }
         
-        // Step 2: Check metering (monthly character limit)
-        const usage = checkAndUpdateUsage(license_key, textLength);
+        // Step 3: Get usage and check post-based limits
+        const plan = resolvePlan(validation);
+        const usage = await getUsage(license_key, plan);
         
-        if (!usage.allowed) {
-            return res.status(429).json({
-                error: 'Monthly character limit exceeded',
+        // Determine if user has paid plan
+        const hasPaid = plan !== 'trial' && !validation.license?.test_mode;
+        
+        // Trial logic (אם אין תכנית בתשלום)
+        if (!hasPaid) {
+            if (!usage.trial_post_id) {
+                usage.trial_post_id = String(post_id);
+            }
+            if (String(post_id) !== usage.trial_post_id) {
+                return res.status(402).json({ 
+                    error: 'ניצלת את הפוסט החינמי. נא לרכוש תכנית.' 
+                });
+            }
+        }
+        
+        // מכסה לפי פוסטים/חודש לתוכניות בתשלום
+        if (hasPaid) {
+            const limit = getPlanLimit(plan);
+            const alreadyUsed = usage.posts_used.has(String(post_id));
+            const usedCount = usage.posts_used.size;
+            
+            if (!alreadyUsed && isFinite(limit) && usedCount >= limit) {
+                return res.status(429).json({ 
+                    error: 'המכסה החודשית בפוסטים נוצלה', 
+                    plan, 
+                    used: usedCount, 
+                    limit 
+                });
+            }
+        }
+        
+        // Step 4: Get model for language
+        const { modelPath, language: chosenLanguage } = await getModelForLanguage(text, language || null);
+        const tempFilePath = path.join('/tmp', `piper_out_${Date.now()}_${Math.floor(Math.random()*1000)}.wav`);
+        
+        // Step 5: Schedule audio generation with concurrency control and timeout
+        try {
+            const job = () => new Promise(async (resolve, reject) => {
+                const tm = setTimeout(() => reject(new Error('Job timeout')), JOB_TIMEOUT_MS);
+                try {
+                    await synthToWav(text, modelPath, tempFilePath);
+                    clearTimeout(tm);
+                    resolve();
+                } catch (e) { 
+                    clearTimeout(tm); 
+                    reject(e); 
+                }
+            });
+            
+            await schedule(job);
+            
+            // Read generated audio
+            const audioBuffer = fs.readFileSync(tempFilePath);
+            
+            if (!audioBuffer || audioBuffer.length === 0) {
+                console.error('Generated audio buffer is empty');
+                return res.status(500).json({
+                    error: 'Generated audio is empty'
+                });
+            }
+            
+            // Step 6: Update usage after successful generation
+            // סימון שימוש בפוסט (נספר רק אם חדש)
+            if (!usage.posts_used.has(String(post_id))) {
+                usage.posts_used.add(String(post_id));
+            }
+            usage.generate_count += 1;
+            // (chars_used אפשר לעדכן לסטטיסטיקה)
+            usage.chars_used += (text || '').length;
+            usage.plan = plan; // שמירת התוכנית
+            await updateUsage(license_key, usage);
+            
+            // Step 7: Return success response with audio data
+            const audioBase64 = audioBuffer.toString('base64');
+            
+            res.json({
+                ok: true,
+                language: chosenLanguage,
+                audio_data: audioBase64,
+                audio_mime: 'audio/wav',
+                filename: `audio_${Date.now()}.wav`,
                 usage: {
-                    used: usage.used,
-                    limit: usage.limit,
-                    remaining: usage.remaining,
+                    plan: resolvePlan(validation),
+                    used_posts: usage.posts_used.size,
+                    limit_posts: getPlanLimit(resolvePlan(validation)),
+                    remaining_posts: isFinite(getPlanLimit(resolvePlan(validation))) ? Math.max(0, getPlanLimit(resolvePlan(validation)) - usage.posts_used.size) : Infinity,
                     generate_count: usage.generate_count
                 }
             });
-        }
-        
-        // Step 2.5: Increment generate counter
-        const generateCount = incrementGenerateCount(license_key, wp_user_id);
-        console.log(`Generate count for license ${license_key.substring(0, 8)}... (WP User ID: ${wp_user_id || 'N/A'}): ${generateCount}`);
-        
-        // Step 3: Generate audio with Piper
-        console.log(`Generating audio for ${textLength} characters...`);
-        let audioBuffer;
-        try {
-// בתוך /generate:
-audioBuffer = await generateAudioWithPiper(text, language || null);
+            
         } catch (audioError) {
             console.error('Audio generation failed:', audioError);
-            // Revert usage since generation failed
-            const usageEntry = usageDB.get(license_key);
-            if (usageEntry) {
-                usageEntry.chars_used = Math.max(0, usageEntry.chars_used - textLength);
+            
+            // Check if timeout error
+            if (audioError.message === 'Busy: try again later') {
+                return res.status(429).json({
+                    error: audioError.message
+                });
             }
+            
             return res.status(500).json({
                 error: audioError.message || 'Failed to generate audio'
             });
-        }
-        
-        // Validate audio buffer
-        if (!audioBuffer || audioBuffer.length === 0) {
-            console.error('Generated audio buffer is empty');
-            // Revert usage since generation failed
-            const usageEntry = usageDB.get(license_key);
-            if (usageEntry) {
-                usageEntry.chars_used = Math.max(0, usageEntry.chars_used - textLength);
+        } finally {
+            // Cleanup temp file
+            if (fs.existsSync(tempFilePath)) {
+                fs.unlink(tempFilePath, () => {});
             }
-            return res.status(500).json({
-                error: 'Generated audio is empty'
-            });
         }
-        
-        // Step 4: Return audio binary directly to client (WordPress will save it)
-        // Convert buffer to base64 for JSON transmission
-        const audioBase64 = audioBuffer.toString('base64');
-        
-        // Step 5: Return success response with audio data
-        res.json({
-            success: true,
-            audio_data: audioBase64, // Base64 encoded audio file
-            audio_mime: 'audio/wav',
-            filename: `audio_${Date.now()}.wav`,
-            usage: {
-                used: usage.used,
-                limit: usage.limit,
-                remaining: usage.remaining,
-                this_request: textLength,
-                generate_count: generateCount
-            }
-        });
         
     } catch (error) {
         console.error('Error in /generate:', error);
@@ -694,17 +980,47 @@ app.get('/admin/stats', async (req, res) => {
         const stats = [];
         const currentMonth = new Date().toISOString().slice(0, 7);
         
-        for (const [licenseKey, usage] of usageDB.entries()) {
-            if (usage.month === currentMonth) {
-                stats.push({
-                    license_key: licenseKey.substring(0, 8) + '...', // Partial key for privacy
-                    month: usage.month,
-                    chars_used: usage.chars_used,
-                    generate_count: usage.generate_count || 0,
-                    remaining: MONTHLY_CHAR_LIMIT - usage.chars_used,
-                    wp_user_ids: usage.wp_user_ids ? Array.from(usage.wp_user_ids) : [], // WP User IDs using this license
-                    unique_users: usage.wp_user_ids ? usage.wp_user_ids.size : 0 // Number of unique WP users
-                });
+        // Try to load from DB first, fallback to cache
+        if (dbPool) {
+            try {
+                const [rows] = await dbPool.query(
+                    `SELECT * FROM \`${DB_TABLE_NAME}\` WHERE month = ?`,
+                    [currentMonth]
+                );
+                
+                for (const row of rows) {
+                    const postsUsedArray = JSON.parse(row.posts_used || '[]');
+                    stats.push({
+                        license_key: row.license_key.substring(0, 8) + '...',
+                        month: row.month,
+                        posts_used: postsUsedArray.length,
+                        generate_count: row.generate_count || 0,
+                        trial_post_id: row.trial_post_id || null,
+                        chars_used: row.chars_used || 0,
+                        plan: row.plan || null
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading stats from DB:', error.message);
+                // Fallback to cache
+            }
+        }
+        
+        // Fallback to cache if DB failed or not available
+        if (stats.length === 0) {
+            for (const [cacheKey, usage] of (global.usageDB || new Map()).entries()) {
+                if (usage.month === currentMonth) {
+                    const licenseKey = cacheKey.split('_')[0]; // Extract license_key from cache key
+                    stats.push({
+                        license_key: licenseKey.substring(0, 8) + '...',
+                        month: usage.month,
+                        posts_used: usage.posts_used ? usage.posts_used.size : 0,
+                        generate_count: usage.generate_count || 0,
+                        trial_post_id: usage.trial_post_id || null,
+                        chars_used: usage.chars_used || 0,
+                        plan: usage.plan || null
+                    });
+                }
             }
         }
         
@@ -738,7 +1054,6 @@ app.post('/usage', async (req, res) => {
         }
         
         // Validate license (או מצב בדיקה)
-        // ב-TEST_MODE או עם TEST key, אנחנו לא מנסים להתחבר ל-Freemius בכלל
         let validation;
         const isTestKey = license_key === 'TEST' || license_key === TEST_LICENSE_KEY;
         const shouldSkipValidation = TEST_MODE || isTestKey;
@@ -759,33 +1074,128 @@ app.post('/usage', async (req, res) => {
         }
         
         // Get usage
-        const currentMonth = new Date().toISOString().slice(0, 7);
-        const usage = usageDB.get(license_key) || { 
-            month: currentMonth, 
-            chars_used: 0,
-            generate_count: 0,
-            wp_user_ids: new Set()
-        };
-        
-        // Reset if new month
-        if (usage.month !== currentMonth) {
-            usage.month = currentMonth;
-            usage.chars_used = 0;
-            usage.generate_count = 0;
-            usage.wp_user_ids = new Set();
-        }
+        const plan = resolvePlan(validation);
+        const usage = await getUsage(license_key, plan);
+        const limit = getPlanLimit(plan);
         
         res.json({
             month: usage.month,
-            used: usage.chars_used,
-            limit: MONTHLY_CHAR_LIMIT,
-            remaining: MONTHLY_CHAR_LIMIT - usage.chars_used,
-            percentage: ((usage.chars_used / MONTHLY_CHAR_LIMIT) * 100).toFixed(2),
-            generate_count: usage.generate_count || 0
+            plan: plan,
+            used_posts: usage.posts_used ? usage.posts_used.size : 0,
+            limit_posts: limit,
+            remaining_posts: isFinite(limit) ? Math.max(0, limit - (usage.posts_used ? usage.posts_used.size : 0)) : Infinity,
+            generate_count: usage.generate_count || 0,
+            trial_post_id: usage.trial_post_id || null
         });
         
     } catch (error) {
         console.error('Error in /usage:', error);
+        res.status(500).json({
+            error: error.message || 'Internal server error'
+        });
+    }
+});
+
+/**
+ * Database setup/migration endpoint - creates tables and columns if needed
+ */
+app.post('/admin/setup-database', async (req, res) => {
+    try {
+        // Simple authentication
+        const adminKey = req.headers['x-admin-key'];
+        if (adminKey !== process.env.ADMIN_KEY) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        
+        const result = await initDatabase();
+        
+        if (result) {
+            res.json({
+                success: true,
+                message: 'Database initialized successfully',
+                table: DB_TABLE_NAME,
+                database: DB_CONFIG.database
+            });
+        } else {
+            res.status(500).json({
+                success: false,
+                error: 'Database initialization failed. Check server logs.',
+                note: 'Server will continue using in-memory storage'
+            });
+        }
+    } catch (error) {
+        console.error('Error in /admin/setup-database:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Internal server error'
+        });
+    }
+});
+
+/**
+ * Database status endpoint - check if database is configured
+ */
+app.get('/admin/database-status', async (req, res) => {
+    try {
+        // Simple authentication
+        const adminKey = req.headers['x-admin-key'];
+        if (adminKey !== process.env.ADMIN_KEY) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        
+        if (!dbPool) {
+            return res.json({
+                connected: false,
+                message: 'Database not connected. Using in-memory storage.',
+                config: {
+                    host: DB_CONFIG.host,
+                    database: DB_CONFIG.database,
+                    table: DB_TABLE_NAME
+                }
+            });
+        }
+        
+        // Test connection and check table
+        try {
+            const [rows] = await dbPool.query(`SHOW TABLES LIKE '${DB_TABLE_NAME}'`);
+            const tableExists = rows.length > 0;
+            
+            if (tableExists) {
+                const [columns] = await dbPool.query(`DESCRIBE \`${DB_TABLE_NAME}\``);
+                const [count] = await dbPool.query(`SELECT COUNT(*) as total FROM \`${DB_TABLE_NAME}\``);
+                
+                return res.json({
+                    connected: true,
+                    table_exists: true,
+                    table: DB_TABLE_NAME,
+                    database: DB_CONFIG.database,
+                    columns: columns.map(col => ({
+                        name: col.Field,
+                        type: col.Type,
+                        null: col.Null,
+                        key: col.Key,
+                        default: col.Default
+                    })),
+                    record_count: count[0]?.total || 0
+                });
+            } else {
+                return res.json({
+                    connected: true,
+                    table_exists: false,
+                    table: DB_TABLE_NAME,
+                    database: DB_CONFIG.database,
+                    message: 'Table does not exist. Run /admin/setup-database to create it.'
+                });
+            }
+        } catch (error) {
+            return res.status(500).json({
+                connected: false,
+                error: error.message,
+                message: 'Error checking database status'
+            });
+        }
+    } catch (error) {
+        console.error('Error in /admin/database-status:', error);
         res.status(500).json({
             error: error.message || 'Internal server error'
         });
@@ -803,6 +1213,18 @@ process.on('uncaughtException', (error) => {
 });
 
 const PORT = process.env.PORT || 3004;
+
+// Initialize database on startup (non-blocking)
+initDatabase().then(success => {
+    if (success) {
+        console.log(`✅ Database connected: ${DB_CONFIG.database}.${DB_TABLE_NAME}`);
+    } else {
+        console.log('⚠️  Database connection failed - using in-memory storage');
+        console.log('   To set up database, configure DB_HOST, DB_USER, DB_PASSWORD, DB_NAME in .env');
+        console.log('   Then call POST /admin/setup-database with x-admin-key header');
+    }
+});
+
 app.listen(PORT, () => {
     console.log('');
     console.log('🚀 Audio-Press AI Server started successfully!');
@@ -815,5 +1237,9 @@ app.listen(PORT, () => {
         console.log('   To disable Freemius, set TEST_MODE=true in .env or NODE_ENV=development');
         console.log('');
     }
+    console.log('📊 Database Setup:');
+    console.log('   POST /admin/setup-database - Create database tables');
+    console.log('   GET  /admin/database-status - Check database connection');
+    console.log('');
 });
 
