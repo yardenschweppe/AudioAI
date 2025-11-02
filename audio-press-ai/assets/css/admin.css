@@ -28,7 +28,7 @@
     height: 48px;
     border-radius: 50%;
     border: none;
-    background: #2271b1;
+    background: #2c2c2c;
     color: white;
     cursor: pointer;
     display: flex;
@@ -41,7 +41,7 @@
 }
 
 .audio-press-ai-custom-player .play-pause-btn:hover {
-    background: #135e96;
+    background: #1a1a1a;
     transform: scale(1.05);
 }
 
@@ -86,14 +86,14 @@
 
 .audio-press-ai-custom-player .progress-bar {
     height: 100%;
-    background: #2271b1;
+    background: #2c2c2c;
     border-radius: 3px;
     transition: width 0.1s linear;
     width: 0%;
 }
 
-.audio-press-ai-custom-player .progress-bar:hover {
-    background: #135e96;
+.audio-press-ai-custom-player .progress-bar-wrapper:hover .progress-bar {
+    background: #1a1a1a;
 }
 
 .audio-press-ai-custom-player .time-display {
@@ -113,7 +113,7 @@
 }
 
 .audio-press-ai-custom-player .time-current {
-    color: #2271b1;
+    color: #2c2c2c;
     font-weight: 600;
 }
 

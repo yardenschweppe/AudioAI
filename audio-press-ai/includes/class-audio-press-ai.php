@@ -937,15 +937,101 @@ class Audio_Press_AI {
             return $content;
         }
         
-        // Build player HTML with proper escaping
+        // Build custom player HTML with proper escaping
+        $unique_id = 'audio-press-ai-' . $post_id;
         $player_html = '<div class="audio-press-ai-player-wrapper">';
         $player_html .= '<span class="audio-label">' . esc_html__('האזנה לפוסט', 'audio-press-ai') . '</span>';
-        $player_html .= '<audio controls class="audio-press-ai-player">';
+        $player_html .= '<div class="audio-press-ai-custom-player">';
+        $player_html .= '<div class="player-controls">';
+        $player_html .= '<button class="play-pause-btn paused" id="' . esc_attr($unique_id) . '-play-pause" type="button" aria-label="Play/Pause"></button>';
+        $player_html .= '<div class="player-info">';
+        $player_html .= '<div class="progress-container">';
+        $player_html .= '<div class="progress-bar-wrapper" id="' . esc_attr($unique_id) . '-progress-wrapper">';
+        $player_html .= '<div class="progress-bar" id="' . esc_attr($unique_id) . '-progress"></div>';
+        $player_html .= '</div>';
+        $player_html .= '</div>';
+        $player_html .= '<div class="time-display">';
+        $player_html .= '<span class="time-current" id="' . esc_attr($unique_id) . '-time-current">0:00</span>';
+        $player_html .= '<span class="time-separator">/</span>';
+        $player_html .= '<span class="time-total" id="' . esc_attr($unique_id) . '-time-total">0:00</span>';
+        $player_html .= '</div>';
+        $player_html .= '</div>';
+        $player_html .= '</div>';
+        $player_html .= '<audio id="' . esc_attr($unique_id) . '-audio-element" preload="metadata">';
         $player_html .= '<source src="' . esc_url($audio_url) . '" type="audio/wav">';
         $player_html .= '<source src="' . esc_url($audio_url) . '" type="audio/mpeg">';
         $player_html .= esc_html__('Your browser does not support the audio element.', 'audio-press-ai');
         $player_html .= '</audio>';
         $player_html .= '</div>';
+        $player_html .= '</div>';
+        
+        // Add inline JavaScript to initialize player
+        $player_html .= '<script>';
+        $player_html .= '(function() {';
+        $player_html .= 'var audio = document.getElementById("' . esc_js($unique_id) . '-audio-element");';
+        $player_html .= 'if (!audio) return;';
+        $player_html .= 'var playPauseBtn = document.getElementById("' . esc_js($unique_id) . '-play-pause");';
+        $player_html .= 'var progressBar = document.getElementById("' . esc_js($unique_id) . '-progress");';
+        $player_html .= 'var progressWrapper = document.getElementById("' . esc_js($unique_id) . '-progress-wrapper");';
+        $player_html .= 'var timeCurrent = document.getElementById("' . esc_js($unique_id) . '-time-current");';
+        $player_html .= 'var timeTotal = document.getElementById("' . esc_js($unique_id) . '-time-total");';
+        
+        $player_html .= 'function formatTime(seconds) {';
+        $player_html .= 'if (isNaN(seconds) || !isFinite(seconds)) return "0:00";';
+        $player_html .= 'var mins = Math.floor(seconds / 60);';
+        $player_html .= 'var secs = Math.floor(seconds % 60);';
+        $player_html .= 'return mins + ":" + (secs < 10 ? "0" : "") + secs;';
+        $player_html .= '}';
+        
+        $player_html .= 'function updateTime() {';
+        $player_html .= 'if (audio.duration) timeTotal.textContent = formatTime(audio.duration);';
+        $player_html .= 'timeCurrent.textContent = formatTime(audio.currentTime);';
+        $player_html .= 'if (audio.duration) {';
+        $player_html .= 'var percent = (audio.currentTime / audio.duration) * 100;';
+        $player_html .= 'progressBar.style.width = percent + "%";';
+        $player_html .= '}';
+        $player_html .= '}';
+        
+        $player_html .= 'audio.addEventListener("loadedmetadata", function() {';
+        $player_html .= 'timeTotal.textContent = formatTime(audio.duration);';
+        $player_html .= '});';
+        
+        $player_html .= 'audio.addEventListener("timeupdate", updateTime);';
+        $player_html .= 'audio.addEventListener("loadeddata", updateTime);';
+        
+        $player_html .= 'playPauseBtn.addEventListener("click", function() {';
+        $player_html .= 'if (audio.paused) {';
+        $player_html .= 'audio.play().catch(function(err) { console.error("Error:", err); });';
+        $player_html .= 'playPauseBtn.classList.remove("paused");';
+        $player_html .= 'playPauseBtn.classList.add("playing");';
+        $player_html .= '} else {';
+        $player_html .= 'audio.pause();';
+        $player_html .= 'playPauseBtn.classList.remove("playing");';
+        $player_html .= 'playPauseBtn.classList.add("paused");';
+        $player_html .= '}';
+        $player_html .= '});';
+        
+        $player_html .= 'audio.addEventListener("play", function() {';
+        $player_html .= 'playPauseBtn.classList.remove("paused");';
+        $player_html .= 'playPauseBtn.classList.add("playing");';
+        $player_html .= '});';
+        
+        $player_html .= 'audio.addEventListener("pause", function() {';
+        $player_html .= 'playPauseBtn.classList.remove("playing");';
+        $player_html .= 'playPauseBtn.classList.add("paused");';
+        $player_html .= '});';
+        
+        $player_html .= 'progressWrapper.addEventListener("click", function(e) {';
+        $player_html .= 'if (!audio.duration) return;';
+        $player_html .= 'var rect = this.getBoundingClientRect();';
+        $player_html .= 'var x = e.clientX - rect.left;';
+        $player_html .= 'var percent = Math.max(0, Math.min(1, x / rect.width));';
+        $player_html .= 'audio.currentTime = percent * audio.duration;';
+        $player_html .= '});';
+        
+        $player_html .= 'audio.load();';
+        $player_html .= '})();';
+        $player_html .= '</script>';
         
         return $player_html . $content;
     }
