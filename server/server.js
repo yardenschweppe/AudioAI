@@ -5,7 +5,15 @@ const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const mysql = require('mysql2/promise');
+
+// MySQL is optional - load only if configured
+let mysql = null;
+try {
+    mysql = require('mysql2/promise');
+} catch (error) {
+    console.log('⚠️  mysql2 package not installed. Database features disabled.');
+    console.log('   To enable: npm install mysql2');
+}
 // franc is an ES Module, so we'll import it dynamically
 let francModule = null;
 async function getFranc() {
@@ -127,16 +135,71 @@ if (!global.usageDB) global.usageDB = new Map();
  * Initialize MySQL connection and create table if needed
  */
 async function initDatabase() {
+    // Check if mysql2 is installed
+    if (!mysql) {
+        console.error('⚠️  mysql2 package not installed. Database features disabled.');
+        console.error('   To enable database storage: npm install mysql2');
+        console.error('   Then configure DB_HOST, DB_USER, DB_PASSWORD, DB_NAME in .env');
+        return false;
+    }
+    
+    // Check if database config is provided
+    if (!DB_CONFIG.host || !DB_CONFIG.user || !DB_CONFIG.database) {
+        console.log('ℹ️  Database not configured (DB_HOST/DB_USER/DB_NAME missing in .env)');
+        console.log('   Using in-memory storage only');
+        return false;
+    }
+    
     try {
-        // Create database if it doesn't exist
-        const tempConfig = { ...DB_CONFIG };
-        delete tempConfig.database;
-        const tempConnection = await mysql.createConnection(tempConfig);
-        await tempConnection.query(`CREATE DATABASE IF NOT EXISTS \`${DB_CONFIG.database}\``);
-        await tempConnection.end();
+        // First, try to connect without database to test credentials
+        const tempConfig = { 
+            host: DB_CONFIG.host,
+            user: DB_CONFIG.user,
+            password: DB_CONFIG.password,
+            waitForConnections: true,
+            connectionLimit: 10,
+            queueLimit: 0
+        };
+        
+        let tempConnection = null;
+        try {
+            tempConnection = await mysql.createConnection(tempConfig);
+            // Try to create database (may fail if user doesn't have CREATE privilege, that's OK)
+            try {
+                await tempConnection.query(`CREATE DATABASE IF NOT EXISTS \`${DB_CONFIG.database}\``);
+            } catch (createError) {
+                // Database might already exist or user doesn't have CREATE privilege
+                // This is OK - we'll try to connect to existing database
+                if (createError.code === 'ER_ACCESS_DENIED_ERROR') {
+                    console.log(`   Note: User '${DB_CONFIG.user}' cannot create databases (CREATE privilege required)`);
+                    console.log(`   Assuming database '${DB_CONFIG.database}' already exists`);
+                }
+            }
+            await tempConnection.end();
+        } catch (tempError) {
+            // If we can't even connect, show helpful error
+            if (tempError.code === 'ER_ACCESS_DENIED_ERROR') {
+                throw new Error(`Access denied for user '${DB_CONFIG.user}'@'${DB_CONFIG.host}'. Check DB_USER and DB_PASSWORD.`);
+            } else if (tempError.code === 'ECONNREFUSED') {
+                throw new Error(`Cannot connect to MySQL server at ${DB_CONFIG.host}. Check DB_HOST and ensure MySQL is running.`);
+            }
+            throw tempError;
+        }
 
-        // Create connection pool
+        // Now connect to the specific database
         dbPool = mysql.createPool(DB_CONFIG);
+        
+        // Test the connection and database access
+        try {
+            await dbPool.query('SELECT 1');
+        } catch (dbError) {
+            if (dbError.code === 'ER_BAD_DB_ERROR') {
+                throw new Error(`Database '${DB_CONFIG.database}' does not exist. Create it manually:\n   CREATE DATABASE \`${DB_CONFIG.database}\`;`);
+            } else if (dbError.code === 'ER_ACCESS_DENIED_ERROR') {
+                throw new Error(`Access denied for user '${DB_CONFIG.user}' to database '${DB_CONFIG.database}'. Grant privileges:\n   GRANT ALL ON \`${DB_CONFIG.database}\`.* TO '${DB_CONFIG.user}'@'localhost';`);
+            }
+            throw dbError;
+        }
 
         // Create table if it doesn't exist
         const createTableSQL = `
@@ -158,12 +221,16 @@ async function initDatabase() {
         `;
         
         await dbPool.query(createTableSQL);
-        console.log('✅ Database initialized successfully');
+        console.log(`✅ Database initialized: ${DB_CONFIG.database}.${DB_TABLE_NAME}`);
         return true;
     } catch (error) {
         console.error('⚠️  Database initialization failed:', error.message);
-        console.error('   Using in-memory storage only (data will be lost on restart)');
-        dbPool = null;
+        if (dbPool) {
+            try {
+                await dbPool.end();
+            } catch (e) {}
+            dbPool = null;
+        }
         return false;
     }
 }
