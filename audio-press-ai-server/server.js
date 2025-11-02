@@ -2,18 +2,21 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 require('dotenv').config();
-
+const { exec } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 // Configuration
+// אפשר להגדיר ב-.env או בקוד (קודם מנסה .env, אחרת ערך ברירת מחדל)
 const FREEMIUS_API_URL = 'https://api.freemius.com/v1/developers';
-const FREEMIUS_DEVELOPER_ID = 21493; // בדרך כלל זה אותו מספר כמו Plugin ID, אם לא מוצא אותו - נסה 21493 או חפש ב-Settings > Integration
-const FREEMIUS_PUBLIC_KEY = 'pk_c1f4731e093f2279f624161d5ee8b';
-const FREEMIUS_SECRET_KEY = 'sk_0MMUBME@.WS)<IG1GLBsW(~w<0b)X';
-const FREEMIUS_PLUGIN_ID = 21493; // Plugin ID מ-URL: /plugins/21493/
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const FREEMIUS_DEVELOPER_ID = process.env.FREEMIUS_DEVELOPER_ID || 21493;
+const FREEMIUS_PUBLIC_KEY = process.env.FREEMIUS_PUBLIC_KEY || 'pk_c1f4731e093f2279f624161d5ee8b';
+const FREEMIUS_SECRET_KEY = process.env.FREEMIUS_SECRET_KEY || 'sk_0MMUBME@.WS)<IG1GLBsW(~w<0b)X';
+const FREEMIUS_PLUGIN_ID = process.env.FREEMIUS_PLUGIN_ID || 21493;
+const PIPER_MODEL_PATH = '/opt/piper/voices/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx';
 const MONTHLY_CHAR_LIMIT = 200000; // 200K characters per month
 
 // Development/Test Mode - מאפשר לנסות בלי Freemius (השתמש ב-"TEST" כ-license_key)
@@ -165,35 +168,53 @@ function incrementGenerateCount(licenseKey, wpUserId = null) {
 /**
  * Generate audio using OpenAI TTS
  */
-async function generateAudioWithOpenAI(text, model, voice) {
-    // Check if OpenAI API key is configured
-    if (!OPENAI_API_KEY || OPENAI_API_KEY.trim() === '') {
-        throw new Error('OpenAI API key not configured. Please set OPENAI_API_KEY environment variable.');
-    }
-    
-    try {
-        const response = await axios.post(
-            'https://api.openai.com/v1/audio/speech',
-            {
-                model: model || 'tts-1-hd',
-                input: text,
-                voice: voice || 'nova'
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${OPENAI_API_KEY}`,
-                    'Content-Type': 'application/json'
-                },
-                responseType: 'arraybuffer',
-                timeout: 60000 // 60 seconds
+/**
+ * Generate audio using Piper TTS
+ */
+async function generateAudioWithPiper(text) {
+    return new Promise((resolve, reject) => {
+        // 1. יצירת נתיב לקובץ זמני
+        // אנו משתמשים בתיקיית /tmp/ שהיא תיקייה סטנדרטית לקבצים זמניים
+        const tempFileName = `piper_out_${Date.now()}_${Math.floor(Math.random() * 1000)}.wav`;
+        const tempFilePath = path.join('/tmp', tempFileName);
+
+        // 2. טיפול בטקסט עבור פקודת ה-shell
+        // טיפול בגרש בודד ('') כדי למנוע שבירת הפקודה
+        const escapedText = text.replace(/'/g, "'\\''");
+
+        // 3. בניית הפקודה של Piper
+        // אנו משתמשים ב-symlink הגלובלי שיצרנו
+        // printf 'escaped_text' | piper --model /path/to/model.onnx --output_file /tmp/tempfile.wav
+        const command = `printf '${escapedText}' | /usr/local/bin/piper -m ${PIPER_MODEL_PATH} -f ${tempFilePath}`;
+
+        // 4. הרצת הפקודה
+        exec(command, (error, stdout, stderr) => {
+            if (error) {
+                console.error(`Piper exec error: ${error}`);
+                console.error(`Piper stderr: ${stderr}`);
+                return reject(new Error(`Failed to generate audio with Piper: ${stderr || error.message}`));
             }
-        );
-        
-        return Buffer.from(response.data);
-    } catch (error) {
-        console.error('OpenAI API error:', error.response?.data || error.message);
-        throw new Error(error.response?.data?.error?.message || 'Failed to generate audio');
-    }
+
+            // 5. קריאת הקובץ שנוצר
+            fs.readFile(tempFilePath, (readError, data) => {
+                if (readError) {
+                    console.error(`Error reading temp file: ${readError}`);
+                    return reject(new Error(`Failed to read generated audio file: ${readError.message}`));
+                }
+
+                // 6. מחיקת הקובץ הזמני (ניקיון)
+                fs.unlink(tempFilePath, (unlinkError) => {
+                    if (unlinkError) {
+                        console.error(`Warning: Failed to delete temp file: ${tempFilePath}`);
+                    }
+                });
+
+                // 7. החזרת הדאטה של האודיו (Buffer)
+                console.log(`Piper successfully generated ${data.length} bytes.`);
+                resolve(data); // data is a Buffer
+            });
+        });
+    });
 }
 
 // Audio files are sent directly to WordPress, no storage function needed
@@ -258,8 +279,7 @@ app.post('/generate', async (req, res) => {
         
         // Step 3: Generate audio with OpenAI
         console.log(`Generating audio for ${textLength} characters...`);
-        const audioBuffer = await generateAudioWithOpenAI(text, model, voice);
-        
+        const audioBuffer = await generateAudioWithPiper(text);        
         // Step 4: Return audio binary directly to client (WordPress will save it)
         // Convert buffer to base64 for JSON transmission
         const audioBase64 = audioBuffer.toString('base64');
@@ -268,9 +288,9 @@ app.post('/generate', async (req, res) => {
         res.json({
             success: true,
             audio_data: audioBase64, // Base64 encoded audio file
-            audio_mime: 'audio/mpeg',
-            filename: `audio_${Date.now()}.mp3`,
-            usage: {
+            audio_mime: 'audio/wav',
+            filename: `audio_${Date.now()}.wav`,
+                        usage: {
                 used: usage.used,
                 limit: usage.limit,
                 remaining: usage.remaining,

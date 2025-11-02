@@ -29,13 +29,47 @@
 }
 
 .audio-press-ai-player {
-    width: 100%;
-    max-width: 100%;
-    height: 50px;
-    background: #fff;
-    border-radius: 6px;
-    outline: none;
-    border: 1px solid #e0e0e0;
+  width: 120px !important;
+  max-width: 100%;
+  height: 22px !important;
+  background: transparent !important;
+  border: none!important;
+  border-bottom: 1.2px solid #bbb !important;
+  border-radius: 0 !important;
+  font-size: 11px !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  display: inline-block !important;
+  vertical-align: middle!important;
+}
+
+.audio-press-ai-player-wrapper .audio-label {
+  display: inline-block;
+  font-size: 9px !important;
+  color: #999 !important;
+  opacity: .44 !important;
+  font-weight: 400 !important;
+  letter-spacing: 0.01em;
+  margin-right: 7px !important;
+  margin-bottom: 0 !important;
+  margin-left:0;
+  vertical-align: middle;
+  line-height: 1.0;
+}
+
+.audio-press-ai-player-wrapper {
+  display: flex!important;
+  flex-direction: row!important;
+  align-items: center!important;
+  justify-content: flex-start!important;
+  max-width:120px!important;/*כדי שלא יפוצץ גם בקונטיינר מאד גדול*/
+  min-height:24px!important;
+  padding:0!important;
+  margin:3px 0 8px 0 !important;
+  background: none!important;
+  border: none!important;
+  box-shadow: none!important;
 }
 
 .audio-press-ai-player::-webkit-media-controls-panel {
@@ -47,6 +81,15 @@
 .audio-press-ai-player::-webkit-media-controls-volume-slider,
 .audio-press-ai-player::-webkit-media-controls-timeline {
     filter: none;
+}
+
+.audio-press-ai-player-wrapper .audio-label {
+    font-size: 11px !important;
+    color: #888 !important;
+    opacity: 0.65 !important;
+    margin-bottom: 4px !important;
+    font-weight: 400 !important;
+    letter-spacing: 0.02em;
 }
 
 /* Responsive design */
@@ -73,5 +116,22 @@
         padding: 14px;
         margin: 15px auto;
     }
+}
+
+@media (max-width: 600px){
+  .audio-press-ai-player-wrapper {
+    max-width: 98px!important;
+    min-height:20px!important;
+    margin:2px 0 7px 0 !important;
+  }
+  .audio-press-ai-player {
+    width: 98px !important;
+    height: 18px !important;
+    font-size: 10px !important;
+  }
+  .audio-press-ai-player-wrapper .audio-label {
+    font-size: 8px !important;
+    margin-right: 3px !important;
+  }
 }
 
