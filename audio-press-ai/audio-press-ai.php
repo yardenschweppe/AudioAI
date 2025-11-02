@@ -26,6 +26,11 @@ define('AUDIO_PRESS_AI_API_URL', 'https://chatix.co.il/audio-api'); // Audio-Pre
 // Change to false for production
 define('AUDIO_PRESS_AI_DEV_MODE', true); // Set to false in production!
 
+// Freemius Integration Control
+// Set to false to disable Freemius temporarily (for testing without Freemius)
+// Set to true to enable Freemius when ready
+define('AUDIO_PRESS_AI_FREEMIUS_ENABLED', false); // Change to true when ready to activate Freemius
+
 // Freemius SDK integration
 if (!function_exists('apai_fs')) {
     // Create a helper function for easy access to the Freemius SDK instance.
@@ -33,8 +38,29 @@ if (!function_exists('apai_fs')) {
         global $apai_fs;
 
         if (!isset($apai_fs)) {
+            // Check if Freemius is enabled
+            if (!defined('AUDIO_PRESS_AI_FREEMIUS_ENABLED') || !AUDIO_PRESS_AI_FREEMIUS_ENABLED) {
+                // Freemius is disabled - return dummy object to prevent errors
+                $apai_fs = new class {
+                    public function is_paying() {
+                        return false;
+                    }
+                    public function _get_license() {
+                        return false;
+                    }
+                    public function has_menu() {
+                        return false;
+                    }
+                    public function get_upgrade_url() {
+                        return '#';
+                    }
+                };
+                return $apai_fs;
+            }
+            
+            // Freemius is enabled - proceed with initialization
             // Check if Freemius SDK exists before including
-            $freemius_file = dirname(__FILE__) . '/freemius/start.php';
+            $freemius_file = dirname(__FILE__) . '/wordpress-sdk-master/start.php';
             
             if (file_exists($freemius_file)) {
                 // Include Freemius SDK.
@@ -75,6 +101,9 @@ if (!function_exists('apai_fs')) {
                     public function has_menu() {
                         return false;
                     }
+                    public function get_upgrade_url() {
+                        return '#';
+                    }
                 };
                 
                 // Show admin notice if we're in admin (only once)
@@ -83,7 +112,7 @@ if (!function_exists('apai_fs')) {
                     $notice_shown = true;
                     add_action('admin_notices', function() {
                         if (current_user_can('manage_options')) {
-                            echo '<div class="notice notice-error"><p><strong>Audio-Press AI:</strong> Freemius SDK not found. Please download and install the Freemius SDK in the <code>freemius</code> directory. <a href="https://github.com/Freemius/wordpress-sdk" target="_blank">Download SDK</a></p></div>';
+                            echo '<div class="notice notice-error"><p><strong>Audio-Press AI:</strong> Freemius SDK not found. Please download and install the Freemius SDK in the <code>wordpress-sdk-master</code> directory. <a href="https://github.com/Freemius/wordpress-sdk" target="_blank">Download SDK</a></p></div>';
                         }
                     });
                 }
@@ -93,10 +122,14 @@ if (!function_exists('apai_fs')) {
         return $apai_fs;
     }
 
-    // Init Freemius (only if SDK exists).
+    // Init Freemius (only if enabled and SDK exists).
+    // If Freemius is disabled, apai_fs() will return a dummy object
     apai_fs();
-    // Signal that SDK was initiated.
-    do_action('apai_fs_loaded');
+    
+    // Signal that SDK was initiated (only if Freemius is actually enabled)
+    if (defined('AUDIO_PRESS_AI_FREEMIUS_ENABLED') && AUDIO_PRESS_AI_FREEMIUS_ENABLED) {
+        do_action('apai_fs_loaded');
+    }
 }
 
 // Include required files
