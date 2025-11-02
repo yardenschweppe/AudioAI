@@ -21,7 +21,7 @@ jQuery(document).ready(function($) {
         
         // Method 2: From WordPress post_ID field (most reliable for classic editor)
         if (!id || id === '0') {
-            var postIdField = $('#post_ID');
+            var postIdField = $('#post_id');
             if (postIdField.length) {
                 var fieldVal = postIdField.val();
                 if (fieldVal && fieldVal !== '0' && fieldVal !== '') {
@@ -55,7 +55,7 @@ jQuery(document).ready(function($) {
         
         // Method 5: Try to get from form input (sometimes WordPress uses different field names)
         if (!id || id === '0') {
-            var formInput = $('input[name="post_ID"], input[name="post_id"], #post_id');
+            var formInput = $('input[name="post_id"], input[name="post_id"], #post_id');
             if (formInput.length) {
                 var inputVal = formInput.val();
                 if (inputVal && inputVal !== '0' && inputVal !== '') {
@@ -87,7 +87,7 @@ jQuery(document).ready(function($) {
     });
     
     // Also listen for the post ID field change (for Gutenberg/Classic Editor)
-    $('#post_ID').on('change', function() {
+    $('#post_id').on('change', function() {
         var newPostId = getPostId();
         if (newPostId && newPostId !== postId) {
             postId = newPostId;
