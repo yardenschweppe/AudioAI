@@ -5,7 +5,12 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { franc } = require('franc-min');
+// טעינת ESM דינמית מתוך CommonJS
+let _franc;
+async function detectISO3(text) {
+  _franc = _franc || (await import('franc-min')).default;
+  return _franc(text || '', { minLength: 10 });
+}
 
 // Load .env file (if exists)
 const dotenvResult = require('dotenv').config();
@@ -406,8 +411,9 @@ function detectLanguage(text) {
  * Get model path for a language
  * Returns { modelPath, language } or throws error if language not supported
  */
-function getModelForLanguage(language) {
-    const modelPath = PIPER_MODELS[language];
+async function getModelForLanguage(text, hintLang) {
+    const iso3 = await detectISO3(text);
+    const modelPath = await getModelForLanguage(text, langHint);
     
     if (!modelPath) {
         const languageNames = {
