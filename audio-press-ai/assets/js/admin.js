@@ -187,7 +187,39 @@ jQuery(document).ready(function($) {
         audio.load();
     }
     
-    // Detect language and show selector
+    // Helper function to create language selector HTML
+    function createLanguageSelectorHTML(response) {
+        var detectedLang = response.data.detected;
+        var languages = response.data.available || [];
+        var detectedLangName = response.data.languageName || detectedLang;
+        
+        var html = '<div id="audio-press-ai-language-selector" style="margin-bottom: 10px; padding: 12px; background: #f0f6fc; border: 1px solid #c3c4c7; border-radius: 4px;">';
+        html += '<div style="padding: 8px 10px; background: #fff; border: 1px solid #c3c4c7; border-radius: 4px; margin-bottom: 10px; font-size: 12px;">';
+        html += '<span style="color: #50575e; font-weight: 600;">Detected Language:</span>';
+        html += '<strong style="color: #2271b1; margin-left: 8px; font-size: 13px;">' + detectedLangName + '</strong>';
+        html += '</div>';
+        html += '<label style="display: block; margin-bottom: 6px; font-weight: 600; color: #1d2327;">Select Language:</label>';
+        html += '<select id="audio-press-ai-language-select" style="width: 100%; margin-bottom: 8px; padding: 6px;">';
+        
+        // Add options
+        languages.forEach(function(lang) {
+            html += '<option value="' + lang.code + '"' + (lang.isDetected ? ' selected' : '') + '>';
+            html += lang.name + (lang.isDetected ? ' (Detected)' : '');
+            html += '</option>';
+        });
+        
+        html += '</select>';
+        html += '<small style="color: #50575e; display: block; margin-bottom: 10px; font-style: italic;">Change language if detection is incorrect</small>';
+        html += '<div style="margin-top: 8px; display: flex; gap: 5px;">';
+        html += '<button type="button" class="button button-primary" id="audio-press-ai-generate-with-lang" style="flex: 1;">Generate Audio</button>';
+        html += '<button type="button" class="button button-secondary" id="audio-press-ai-cancel-language" style="flex: 0 0 auto;">Cancel</button>';
+        html += '</div>';
+        html += '</div>';
+        
+        return html;
+    }
+    
+    // Detect language and show selector (for initial generation)
     function detectLanguageAndShowSelector(callback) {
         if (!postId) {
             if (callback) callback();
@@ -195,7 +227,8 @@ jQuery(document).ready(function($) {
         }
         
         statusDiv.show();
-        statusText.text('Detecting language...');
+        statusDiv.css('border-left-color', '#2271b1'); // Blue for info
+        statusText.html('<span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span>Detecting language...');
         
         $.ajax({
             url: audioPressAI.ajaxUrl,
@@ -209,32 +242,7 @@ jQuery(document).ready(function($) {
                 statusDiv.hide();
                 
                 if (response.success && response.data) {
-                    var detectedLang = response.data.detected;
-                    var languages = response.data.available || [];
-                    var detectedLangName = response.data.languageName || detectedLang;
-                    
-                    // Show language selector UI
-                    var html = '<div id="audio-press-ai-language-selector" style="margin-bottom: 10px; padding: 12px; background: #f0f6fc; border: 1px solid #c3c4c7; border-radius: 4px;">';
-                    html += '<div style="padding: 8px 10px; background: #fff; border: 1px solid #c3c4c7; border-radius: 4px; margin-bottom: 10px; font-size: 12px;">';
-                    html += '<span style="color: #50575e; font-weight: 600;">Detected Language:</span>';
-                    html += '<strong style="color: #2271b1; margin-left: 8px; font-size: 13px;">' + detectedLangName + '</strong>';
-                    html += '</div>';
-                    html += '<label style="display: block; margin-bottom: 6px; font-weight: 600; color: #1d2327;">Select Language:</label>';
-                    html += '<select id="audio-press-ai-language-select" style="width: 100%; margin-bottom: 8px; padding: 6px;">';
-                    
-                    // Add options
-                    languages.forEach(function(lang) {
-                        html += '<option value="' + lang.code + '"' + (lang.isDetected ? ' selected' : '') + '>';
-                        html += lang.name + (lang.isDetected ? ' (Detected)' : '');
-                        html += '</option>';
-                    });
-                    
-                    html += '</select>';
-                    html += '<small style="color: #50575e; display: block; margin-bottom: 10px; font-style: italic;">Change language if detection is incorrect</small>';
-                    html += '<div style="margin-top: 8px;">';
-                    html += '<button type="button" class="button button-primary" id="audio-press-ai-generate-with-lang" style="width: 100%;">Generate Audio</button>';
-                    html += '</div>';
-                    html += '</div>';
+                    var html = createLanguageSelectorHTML(response);
                     
                     // Replace generate button with language selector
                     if (generateBtn.length) {
@@ -244,18 +252,10 @@ jQuery(document).ready(function($) {
                     }
                     
                     // Set selected language to detected language
-                    selectedLanguage = detectedLang;
+                    selectedLanguage = response.data.detected;
                     
-                    // Bind event to language selector
-                    $('#audio-press-ai-language-select').on('change', function() {
-                        selectedLanguage = $(this).val();
-                    });
-                    
-                    // Bind event to generate button
-                    $('#audio-press-ai-generate-with-lang').on('click', function() {
-                        selectedLanguage = $('#audio-press-ai-language-select').val();
-                        generateAudio();
-                    });
+                    // Bind events
+                    bindLanguageSelectorEvents();
                     
                     if (callback) callback();
                 } else {
@@ -267,6 +267,113 @@ jQuery(document).ready(function($) {
                 statusDiv.hide();
                 // If detection fails, just proceed with generation
                 if (callback) callback();
+            }
+        });
+    }
+    
+    // Detect language and show selector for regenerate (inserts above player)
+    function detectLanguageAndShowSelectorForRegenerate(callback, $insertBefore) {
+        if (!postId) {
+            if (callback) callback();
+            return;
+        }
+        
+        statusDiv.show();
+        statusDiv.css('border-left-color', '#2271b1'); // Blue for info
+        statusText.html('<span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span>Detecting language...');
+        
+        $.ajax({
+            url: audioPressAI.ajaxUrl,
+            type: 'POST',
+            data: {
+                action: 'audio_press_ai_detect_language',
+                post_id: postId,
+                nonce: audioPressAI.nonce
+            },
+            success: function(response) {
+                statusDiv.hide();
+                
+                // Remove any existing language selector
+                $('#audio-press-ai-language-selector').remove();
+                
+                if (response.success && response.data) {
+                    var html = createLanguageSelectorHTML(response);
+                    
+                    // Insert language selector before the player wrapper or at the beginning of container
+                    if ($insertBefore && $insertBefore.length) {
+                        $insertBefore.before(html);
+                    } else if (container.length) {
+                        container.prepend(html);
+                    }
+                    
+                    // Set selected language to detected language
+                    selectedLanguage = response.data.detected;
+                    
+                    // Bind events (with regenerate mode)
+                    bindLanguageSelectorEvents(true);
+                    
+                    // Scroll to selector
+                    $('html, body').animate({
+                        scrollTop: $('#audio-press-ai-language-selector').offset().top - 50
+                    }, 300);
+                    
+                    if (callback) callback();
+                } else {
+                    // If detection fails, show error
+                    statusText.text('❌ Language detection failed. Please try again.');
+                    statusDiv.css('border-left-color', '#d63638');
+                    setTimeout(function() {
+                        statusDiv.hide();
+                        statusDiv.css('border-left-color', '#2271b1');
+                    }, 3000);
+                    if (callback) callback();
+                }
+            },
+            error: function() {
+                statusDiv.hide();
+                statusText.text('❌ Language detection failed. Please try again.');
+                statusDiv.css('border-left-color', '#d63638');
+                setTimeout(function() {
+                    statusDiv.hide();
+                    statusDiv.css('border-left-color', '#2271b1');
+                }, 3000);
+                if (callback) callback();
+            }
+        });
+    }
+    
+    // Bind events for language selector
+    function bindLanguageSelectorEvents(isRegenerate) {
+        // Remove existing handlers to avoid duplicates
+        $('#audio-press-ai-language-select').off('change');
+        $('#audio-press-ai-generate-with-lang').off('click');
+        $('#audio-press-ai-cancel-language').off('click');
+        
+        // Bind event to language selector
+        $('#audio-press-ai-language-select').on('change', function() {
+            selectedLanguage = $(this).val();
+        });
+        
+        // Bind event to generate button
+        $('#audio-press-ai-generate-with-lang').on('click', function() {
+            selectedLanguage = $('#audio-press-ai-language-select').val();
+            // Remove language selector before generating
+            $('#audio-press-ai-language-selector').remove();
+            generateAudio();
+        });
+        
+        // Bind event to cancel button
+        $('#audio-press-ai-cancel-language').on('click', function() {
+            $('#audio-press-ai-language-selector').remove();
+            // Restore buttons if in regenerate mode
+            if (isRegenerate) {
+                restoreButton($('#audio-press-ai-regenerate'));
+                restoreButton(regenerateBtn);
+            } else {
+                // Restore generate button
+                if (generateBtn.length) {
+                    generateBtn.show();
+                }
             }
         });
     }
@@ -285,7 +392,8 @@ jQuery(document).ready(function($) {
         
         // Show status
         statusDiv.show();
-        statusText.text(audioPressAI.generating);
+        statusDiv.css('border-left-color', '#2271b1'); // Blue for info
+        statusText.html('<span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span>' + audioPressAI.generating);
         
         // Prepare data
         var ajaxData = {
@@ -346,15 +454,29 @@ jQuery(document).ready(function($) {
                     
                     // Re-bind events
                     $('#audio-press-ai-regenerate').on('click', function() {
+                        var $btn = $(this);
+                        var $playerWrapper = $('#audio-press-ai-player-wrapper');
+                        
+                        // Show immediate visual feedback
+                        setButtonLoading($btn, 'Preparing...');
+                        
                         selectedLanguage = null; // Reset for regeneration
-                        detectLanguageAndShowSelector(function() {
-                            generateAudio();
-                        });
+                        
+                        // Show language selector above the player (for regenerate flow)
+                        detectLanguageAndShowSelectorForRegenerate(function() {
+                            // This callback is called after language selector is shown
+                            // The actual generation happens when user clicks "Generate Audio" in the selector
+                            restoreButton($btn); // Re-enable regenerate button in case user cancels
+                        }, $playerWrapper);
                     });
                     $('#audio-press-ai-delete').on('click', deleteAudio);
                     
+                    // Restore regenerate button state
+                    restoreButton($('#audio-press-ai-regenerate'));
+                    restoreButton(regenerateBtn);
+                    
                     // Show success message with usage info
-                    var message = response.data.message;
+                    var message = '✅ Audio generated successfully!';
                     if (response.data.usage) {
                         message += ' | Characters: ' + response.data.usage.used + '/' + response.data.usage.limit;
                     }
@@ -362,28 +484,36 @@ jQuery(document).ready(function($) {
                         message += ' | Generated: ' + response.data.generate_count + ' times this month';
                     }
                     statusText.text(message);
+                    statusDiv.css('border-left-color', '#00a32a'); // Green for success
                     setTimeout(function() {
                         statusDiv.hide();
+                        statusDiv.css('border-left-color', '#2271b1'); // Reset to blue
                     }, 7000);
                 } else {
-                    statusText.text(response.data.message || 'Error generating audio');
-                    generateBtn.prop('disabled', false);
-                    regenerateBtn.prop('disabled', false);
+                    statusText.text('❌ ' + (response.data.message || 'Error generating audio'));
+                    statusDiv.css('border-left-color', '#d63638'); // Red for error
+                    restoreButton(generateBtn);
+                    restoreButton(regenerateBtn);
+                    restoreButton($('#audio-press-ai-generate-with-lang'));
                     $('#audio-press-ai-generate-with-lang').prop('disabled', false);
                     
                     setTimeout(function() {
                         statusDiv.hide();
+                        statusDiv.css('border-left-color', '#2271b1'); // Reset to blue
                     }, 5000);
                 }
             },
             error: function() {
-                statusText.text('Network error. Please try again.');
-                generateBtn.prop('disabled', false);
-                regenerateBtn.prop('disabled', false);
+                statusText.text('❌ Network error. Please try again.');
+                statusDiv.css('border-left-color', '#d63638'); // Red for error
+                restoreButton(generateBtn);
+                restoreButton(regenerateBtn);
+                restoreButton($('#audio-press-ai-generate-with-lang'));
                 $('#audio-press-ai-generate-with-lang').prop('disabled', false);
                 
                 setTimeout(function() {
                     statusDiv.hide();
+                    statusDiv.css('border-left-color', '#2271b1'); // Reset to blue
                 }, 5000);
             }
         });
@@ -450,6 +580,33 @@ jQuery(document).ready(function($) {
         });
     }
     
+    // Helper function to show button loading state
+    function setButtonLoading($btn, loadingText) {
+        if (!$btn.length) return;
+        var originalText = $btn.text();
+        $btn.data('original-text', originalText);
+        $btn.prop('disabled', true);
+        $btn.html('<span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span>' + loadingText);
+        $btn.addClass('is-loading');
+    }
+    
+    // Helper function to restore button normal state
+    function restoreButton($btn) {
+        if (!$btn.length) return;
+        var originalText = $btn.data('original-text');
+        $btn.prop('disabled', false);
+        if (originalText) {
+            $btn.text(originalText);
+        } else {
+            // If no original text saved, try to extract text (remove spinner HTML)
+            var currentText = $btn.text().replace(/Regenerating\.\.\.|Generating\.\.\./g, '').trim();
+            if (currentText) {
+                $btn.text(currentText);
+            }
+        }
+        $btn.removeClass('is-loading');
+    }
+    
     // Bind events
     if (generateBtn.length) {
         generateBtn.on('click', function() {
@@ -460,10 +617,20 @@ jQuery(document).ready(function($) {
     }
     if (regenerateBtn.length) {
         regenerateBtn.on('click', function() {
+            var $btn = $(this);
+            var $playerWrapper = $('#audio-press-ai-player-wrapper');
+            
+            // Show immediate visual feedback
+            setButtonLoading($btn, 'Preparing...');
+            
             selectedLanguage = null; // Reset for regeneration
-            detectLanguageAndShowSelector(function() {
-                generateAudio();
-            });
+            
+            // Show language selector above the player (for regenerate flow)
+            detectLanguageAndShowSelectorForRegenerate(function() {
+                // This callback is called after language selector is shown
+                // The actual generation happens when user clicks "Generate Audio" in the selector
+                restoreButton($btn); // Re-enable regenerate button in case user cancels
+            }, $playerWrapper);
         });
     }
     if (deleteBtn.length) {

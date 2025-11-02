@@ -151,3 +151,31 @@
     opacity: 0.6;
     cursor: not-allowed;
 }
+
+/* Loading state for buttons */
+#audio-press-ai-generate.is-loading,
+#audio-press-ai-regenerate.is-loading {
+    position: relative;
+    pointer-events: none;
+}
+
+#audio-press-ai-generate.is-loading .spinner,
+#audio-press-ai-regenerate.is-loading .spinner {
+    display: inline-block;
+    float: none;
+    margin: 0 5px 0 0;
+    visibility: visible;
+}
+
+/* Enhanced status messages */
+#audio-press-ai-status {
+    transition: border-left-color 0.3s ease;
+}
+
+#audio-press-ai-status.show-success {
+    border-left-color: #00a32a;
+}
+
+#audio-press-ai-status.show-error {
+    border-left-color: #d63638;
+}
