@@ -5,9 +5,55 @@ jQuery(document).ready(function($) {
     var deleteBtn = $('#audio-press-ai-delete');
     var statusDiv = $('#audio-press-ai-status');
     var statusText = $('#audio-press-ai-status-text');
-    var postId = container.data('post-id') || $('#post_ID').val() || '';
     var selectedLanguage = null; // Store selected language
     var currentAudioElement = null; // Store current audio element reference
+    
+    // Function to get post ID dynamically
+    function getPostId() {
+        var id = '';
+        // Try multiple methods to get post ID
+        if (container.length) {
+            id = container.attr('data-post-id') || container.data('post-id') || '';
+        }
+        if (!id) {
+            var postIdField = $('#post_ID');
+            if (postIdField.length) {
+                id = postIdField.val() || '';
+            }
+        }
+        // Convert to number and validate
+        id = parseInt(id, 10);
+        return (id && id > 0) ? id : '';
+    }
+    
+    var postId = getPostId();
+    
+    // Listen for WordPress post save to update post ID (for new posts)
+    // WordPress fires this event when a new post is saved
+    $(document).on('heartbeat-tick', function(event, data) {
+        if (data && data.wp_autosave) {
+            var newPostId = getPostId();
+            if (newPostId && newPostId !== postId) {
+                postId = newPostId;
+                // Update container's data attribute
+                if (container.length) {
+                    container.attr('data-post-id', postId);
+                }
+            }
+        }
+    });
+    
+    // Also listen for the post ID field change (for Gutenberg/Classic Editor)
+    $('#post_ID').on('change', function() {
+        var newPostId = getPostId();
+        if (newPostId && newPostId !== postId) {
+            postId = newPostId;
+            // Update container's data attribute
+            if (container.length) {
+                container.attr('data-post-id', postId);
+            }
+        }
+    });
     
     // Format time helper
     function formatTime(seconds) {
@@ -221,7 +267,8 @@ jQuery(document).ready(function($) {
     
     // Detect language and show selector (for initial generation)
     function detectLanguageAndShowSelector(callback) {
-        if (!postId) {
+        var currentPostId = getPostId();
+        if (!currentPostId) {
             if (callback) callback();
             return;
         }
@@ -235,7 +282,7 @@ jQuery(document).ready(function($) {
             type: 'POST',
             data: {
                 action: 'audio_press_ai_detect_language',
-                post_id: postId,
+                post_id: currentPostId,
                 nonce: audioPressAI.nonce
             },
             success: function(response) {
@@ -273,7 +320,8 @@ jQuery(document).ready(function($) {
     
     // Detect language and show selector for regenerate (inserts above player)
     function detectLanguageAndShowSelectorForRegenerate(callback, $insertBefore) {
-        if (!postId) {
+        var currentPostId = getPostId();
+        if (!currentPostId) {
             if (callback) callback();
             return;
         }
@@ -287,7 +335,7 @@ jQuery(document).ready(function($) {
             type: 'POST',
             data: {
                 action: 'audio_press_ai_detect_language',
-                post_id: postId,
+                post_id: currentPostId,
                 nonce: audioPressAI.nonce
             },
             success: function(response) {
@@ -380,7 +428,8 @@ jQuery(document).ready(function($) {
     
     // Generate audio
     function generateAudio() {
-        if (!postId) {
+        var currentPostId = getPostId();
+        if (!currentPostId) {
             alert('Post ID not found. Please save the post first.');
             return;
         }
@@ -398,7 +447,7 @@ jQuery(document).ready(function($) {
         // Prepare data
         var ajaxData = {
             action: 'audio_press_ai_generate',
-            post_id: postId,
+            post_id: currentPostId,
             nonce: audioPressAI.nonce
         };
         
@@ -525,6 +574,12 @@ jQuery(document).ready(function($) {
             return;
         }
         
+        var currentPostId = getPostId();
+        if (!currentPostId) {
+            alert('Post ID not found. Please save the post first.');
+            return;
+        }
+        
         deleteBtn.prop('disabled', true);
         statusDiv.show();
         statusText.text('Deleting audio...');
@@ -534,7 +589,7 @@ jQuery(document).ready(function($) {
             type: 'POST',
             data: {
                 action: 'audio_press_ai_delete',
-                post_id: postId,
+                post_id: currentPostId,
                 nonce: audioPressAI.nonce
             },
             success: function(response) {

@@ -17,15 +17,33 @@ if (!defined('ABSPATH')) {
 }
 
 // === Freemius SDK Bootstrap ===
+// Freemius Integration Control - set to true to enable Freemius
+define('AUDIO_PRESS_AI_FREEMIUS_ENABLED', true); // Change to false to disable Freemius
+
 if ( ! function_exists( 'audioai_fs' ) ) {
     function audioai_fs() {
         global $audioai_fs;
 
         if ( ! isset( $audioai_fs ) ) {
-            // ודא שהתיקייה freemius עם start.php קיימת בשורש התוסף
+            // Check if Freemius is enabled
+            if ( ! defined( 'AUDIO_PRESS_AI_FREEMIUS_ENABLED' ) || ! AUDIO_PRESS_AI_FREEMIUS_ENABLED ) {
+                // Freemius disabled - return dummy object
+                $audioai_fs = new class {
+                    public function is_paying() { return false; }
+                    public function _get_license() { return false; }
+                    public function has_menu() { return false; }
+                    public function get_upgrade_url() { return '#'; }
+                };
+                return $audioai_fs;
+            }
+
+            // Freemius enabled - load SDK
             $freemius_file = dirname( __FILE__ ) . '/freemius/start.php';
             
-      
+            // Fallback to wordpress-sdk-master if freemius directory doesn't exist
+            if ( ! file_exists( $freemius_file ) ) {
+                $freemius_file = dirname( __FILE__ ) . '/wordpress-sdk-master/start.php';
+            }
             
             if ( file_exists( $freemius_file ) ) {
                 require_once $freemius_file;
@@ -83,13 +101,9 @@ define('AUDIO_PRESS_AI_API_URL', 'https://chatix.co.il/audio-api'); // Audio-Pre
 // Change to false for production
 define('AUDIO_PRESS_AI_DEV_MODE', true); // Set to false in production!
 
-// Freemius Integration Control
-// Set to false to disable Freemius temporarily (for testing without Freemius)
-// Set to true to enable Freemius when ready
-define('AUDIO_PRESS_AI_FREEMIUS_ENABLED', false); // Change to true when ready to activate Freemius
-
-// Block Freemius asset requests if disabled
-if (!defined('AUDIO_PRESS_AI_FREEMIUS_ENABLED') || !AUDIO_PRESS_AI_FREEMIUS_ENABLED) {
+// Block Freemius asset requests ONLY if explicitly disabled
+// This code should NOT run if Freemius is enabled
+if (defined('AUDIO_PRESS_AI_FREEMIUS_ENABLED') && AUDIO_PRESS_AI_FREEMIUS_ENABLED === false) {
     // Prevent Freemius from trying to load assets by blocking its hooks early
     add_action('init', function() {
         // Remove any Freemius hooks if they exist
