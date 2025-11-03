@@ -478,15 +478,8 @@ async function loadLicenseFromDB(licenseKey) {
             return null; // Force re-validation
         }
         
-        return {
-            license_key: row.license_key,
-            plan: row.plan,
-            is_active: row.is_active,
-            expires_at: row.expires_at,
-            freemius_user_id: row.freemius_user_id,
-            freemius_license_id: row.freemius_license_id,
-            validated_at: row.validated_at
-        };
+        // Return the full row (new schema: plan_code, status, period, trial_post_id, is_test, etc.)
+        return row;
     } catch (error) {
         console.error('Error loading license from DB:', error.message);
         return null;
@@ -618,6 +611,105 @@ async function validateFreemiusLicense(licenseKey) {
             error: error.response?.data?.error?.message || 'License validation failed'
         };
     }
+}
+
+/**
+ * Upsert license from validation (new DB schema)
+ */
+async function upsertLicenseFromValidation(licenseKey, validation) {
+    if (!dbPool) return false;
+    try {
+        const lic = validation?.license || {};
+        const planRaw = lic.plan?.name || lic.plan_title || 'trial';
+        const plan_code = String(planRaw || 'trial').toLowerCase();
+        const status = lic.is_active ? 'active' : 'expired';
+        const periodRaw = lic.billing_cycle || lic.period || 'monthly';
+        const period = ['monthly','yearly','lifetime'].includes(String(periodRaw).toLowerCase()) ? String(periodRaw).toLowerCase() : 'monthly';
+        const is_test = lic.test_mode ? 1 : 0;
+        const next_renewal_at = lic.next_bill_at ? new Date(lic.next_bill_at) : (lic.expires ? new Date(lic.expires * 1000) : null);
+
+        await dbPool.query(
+            `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, is_test, validated_at, next_renewal_at)
+             VALUES (?, ?, ?, ?, ?, NOW(), ?)
+             ON DUPLICATE KEY UPDATE
+               plan_code=VALUES(plan_code),
+               status=VALUES(status),
+               period=VALUES(period),
+               is_test=VALUES(is_test),
+               validated_at=VALUES(validated_at),
+               next_renewal_at=VALUES(next_renewal_at)`,
+            [licenseKey, plan_code, status, period, is_test, next_renewal_at]
+        );
+        return true;
+    } catch (e) {
+        console.error('Error upserting license:', e.message);
+        return false;
+    }
+}
+
+/**
+ * Get or validate license (cached or fresh)
+ */
+async function getOrValidateLicense(licenseKey) {
+    if (!dbPool) return null; // DB not configured
+    if (TEST_MODE || licenseKey === 'TEST' || licenseKey === TEST_LICENSE_KEY) {
+        await upsertLicenseFromValidation(licenseKey, { license: { plan: { name: 'trial' }, is_active: true, test_mode: true } });
+        const [rows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [licenseKey]);
+        return rows[0] || null;
+    }
+    const cached = await loadLicenseFromDB(licenseKey);
+    if (cached) return cached;
+    const validation = await validateFreemiusLicense(licenseKey);
+    if (!validation.valid) return null;
+    await upsertLicenseFromValidation(licenseKey, validation);
+    const [rows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [licenseKey]);
+    return rows[0] || null;
+}
+
+// Plan post limits per month
+const PLAN_POST_LIMITS = {
+    trial: 1,
+    starter: 50,
+    creator: 150,
+    pro: 500,
+    agency: 2000,
+    unlimited: Number.MAX_SAFE_INTEGER
+};
+
+async function ensureUsageRow(licenseKey, month) {
+    if (!dbPool) return;
+    await dbPool.query(`INSERT IGNORE INTO \`${DB_TABLE_NAME}\` (license_key, month) VALUES (?, ?)`, [licenseKey, month]);
+}
+
+async function jsonSearchPost(conn, licenseKey, month, postId) {
+    const [rows] = await conn.query(
+        `SELECT JSON_SEARCH(posts_used,'one',CAST(? AS CHAR),NULL,'$[*]') AS found, posts_used_count FROM \`${DB_TABLE_NAME}\` WHERE license_key=? AND month=? FOR UPDATE`,
+        [String(postId), licenseKey, month]
+    );
+    return rows[0];
+}
+
+async function appendPostUsed(conn, licenseKey, month, postId) {
+    await conn.query(
+        `UPDATE \`${DB_TABLE_NAME}\` SET posts_used = JSON_ARRAY_APPEND(posts_used,'$',CAST(? AS CHAR)), posts_used_count = posts_used_count + 1 WHERE license_key=? AND month=?`,
+        [String(postId), licenseKey, month]
+    );
+}
+
+async function incrementUsageCountersDB(licenseKey, textLength) {
+    if (!dbPool) return { used: 0, limit: 200000, remaining: 200000, generate_count: 0 };
+    const month = new Date().toISOString().slice(0, 7);
+    await ensureUsageRow(licenseKey, month);
+    await dbPool.query(`UPDATE \`${DB_TABLE_NAME}\` SET chars_used = chars_used + ?, generate_count = generate_count + 1 WHERE license_key=? AND month=?`, [textLength, licenseKey, month]);
+    const [rows] = await dbPool.query(`SELECT chars_used, generate_count FROM \`${DB_TABLE_NAME}\` WHERE license_key=? AND month=?`, [licenseKey, month]);
+    const u = rows[0] || { chars_used: 0, generate_count: 0 };
+    return { used: Number(u.chars_used)||0, limit: Number(process.env.MONTHLY_CHAR_LIMIT||200000), remaining: Math.max(0, Number(process.env.MONTHLY_CHAR_LIMIT||200000) - (Number(u.chars_used)||0)), generate_count: Number(u.generate_count)||0 };
+}
+
+async function revertCharsOnFailureDB(licenseKey, textLength) {
+    if (!dbPool) return;
+    const month = new Date().toISOString().slice(0, 7);
+    await dbPool.query(`UPDATE \`${DB_TABLE_NAME}\` SET chars_used = GREATEST(chars_used - ?, 0) WHERE license_key=? AND month=?`, [textLength, licenseKey, month]);
 }
 
 /**
@@ -1456,8 +1548,12 @@ app.post('/admin/setup-database', async (req, res) => {
             res.json({
                 success: true,
                 message: 'Database initialized successfully',
-                table: DB_TABLE_NAME,
-                database: DB_CONFIG.database
+                database: DB_CONFIG.database,
+                tables: {
+                    licenses: DB_LICENSES_TABLE,
+                    usage_month: DB_TABLE_NAME
+                },
+                note: 'Both tables created: licenses (license_key, plan_code, status, period, trial_post_id, etc.) and usage_month (monthly usage tracking with JSON posts_used)'
             });
         } else {
             res.status(500).json({
