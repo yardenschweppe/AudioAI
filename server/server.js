@@ -6,7 +6,6 @@ const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { Freemius } = require('@freemius/sdk');
-const OAuth = require('oauth');
 
 // MySQL is optional - load only if configured
 let mysql = null;
@@ -683,60 +682,61 @@ async function validateFreemiusLicense(licenseKey) {
             license_key_preview: licenseKey.substring(0, 8) + '...'
         });
         
-        // Generate OAuth 1.0 authorization header using oauth package
-        // Freemius uses OAuth 1.0 with API Key and Secret Key for server-to-server requests
-        const oauthInstance = new OAuth.OAuth(
-            null, // request token URL (not needed)
-            null, // access token URL (not needed)
-            FREEMIUS_API_KEY, // consumer key
-            FREEMIUS_SECRET_KEY, // consumer secret
-            '1.0', // OAuth version
-            null, // authorize callback URL
-            'HMAC-SHA1' // signature method
-        );
+        // Generate FS Authorization header (Freemius custom authorization scheme)
+        // Format: FS {scope_entity_id}:{scope_entity_public_key}:Base64UrlEncode(sha256(string_to_sign, {scope_entity_secret_key}))
+        // Based on Freemius PHP SDK GenerateAuthorizationParams function
         
-        // Use oauth package's post method with Promise wrapper
-        // The oauth package uses callbacks, so we wrap it in a Promise
-        const response = await new Promise((resolve, reject) => {
-            oauthInstance.post(
-                apiUrl,
-                null, // token (not needed for API key auth)
-                null, // token secret (not needed for API key auth)
-                JSON.stringify(requestBody),
-                'application/json',
-                (error, data, response) => {
-                    // Check for HTTP error status codes (4xx, 5xx)
-                    if (response && response.statusCode && response.statusCode >= 400) {
-                        // Parse error response data
-                        let errorData = null;
-                        try {
-                            errorData = typeof data === 'string' ? JSON.parse(data) : data;
-                        } catch (e) {
-                            errorData = data;
-                        }
-                        const httpError = new Error(errorData?.error?.message || errorData?.message || `HTTP ${response.statusCode}`);
-                        httpError.statusCode = response.statusCode;
-                        httpError.statusMessage = response.statusMessage;
-                        httpError.data = errorData;
-                        reject(httpError);
-                    } else if (error) {
-                        // Network or other errors
-                        reject(error);
-                    } else {
-                        // Success - parse the response data
-                        try {
-                            const parsedData = typeof data === 'string' ? JSON.parse(data) : data;
-                            resolve({
-                                data: parsedData,
-                                status: response?.statusCode || 200,
-                                statusText: response?.statusMessage || 'OK'
-                            });
-                        } catch (parseError) {
-                            reject(new Error(`Failed to parse response: ${parseError.message}`));
-                        }
-                    }
-                }
-            );
+        const requestBodyString = JSON.stringify(requestBody);
+        // PHP md5() returns hex string (32 chars), used in string_to_sign
+        // Content-MD5 header: PHP SDK uses hex MD5 directly (non-standard but matches Freemius)
+        const contentMd5 = crypto.createHash('md5').update(requestBodyString).digest('hex');
+        const contentType = 'application/json';
+        
+        // PHP date('r') returns RFC 2822 format: "Mon, 03 Nov 2025 21:59:22 +0000"
+        const date = new Date().toUTCString().replace(/GMT$/, '+0000');
+        const method = 'POST';
+        
+        // Extract path from URL for signature (just pathname + query, not full URL)
+        const urlObj = new URL(apiUrl);
+        const resourcePath = urlObj.pathname + (urlObj.search || '');
+        
+        // Build string to sign: METHOD\nCONTENT_MD5_HEX\nCONTENT_TYPE\nDATE\nRESOURCE_PATH
+        // PHP uses hex MD5 (from md5() function) in both string_to_sign and Content-MD5 header
+        const stringToSign = [
+            method,
+            contentMd5, // Use hex MD5 in signature (matches PHP md5() output)
+            contentType,
+            date,
+            resourcePath
+        ].join('\n');
+        
+        // Generate HMAC-SHA256 signature (raw binary)
+        const hmacSignature = crypto
+            .createHmac('sha256', FREEMIUS_SECRET_KEY)
+            .update(stringToSign)
+            .digest('base64'); // Get base64 first
+        
+        // Base64UrlEncode: base64 -> replace + with -, / with _, remove = padding
+        const signature = hmacSignature
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=/g, '');
+        
+        // Determine auth type: FS if secret != public, FSP if secret == public
+        const authType = FREEMIUS_SECRET_KEY !== FREEMIUS_PUBLIC_KEY ? 'FS' : 'FSP';
+        
+        // Build authorization header: FS {id}:{public_key}:{signature}
+        const authorization = `${authType} ${FREEMIUS_PRODUCT_ID}:${FREEMIUS_PUBLIC_KEY}:${signature}`;
+        
+        // Make the API call using axios with FS Authorization
+        const response = await axios.post(apiUrl, requestBody, {
+            headers: {
+                'Authorization': authorization,
+                'Date': date,
+                'Content-MD5': contentMd5, // Use hex MD5 (matches PHP SDK behavior)
+                'Content-Type': contentType,
+                'Accept': 'application/json'
+            }
         });
 
         // Debug: log full Freemius response
