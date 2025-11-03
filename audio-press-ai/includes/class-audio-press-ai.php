@@ -562,7 +562,9 @@ class Audio_Press_AI {
         $content = wp_strip_all_tags($content);
         $content = do_shortcode($content);
         $content = wp_strip_all_tags($content);
-        $content = preg_replace('/\s+/', ' ', $content);
+        // Normalize whitespace but keep line breaks for better TTS
+        $content = preg_replace('/[ \t]+/', ' ', $content); // Replace multiple spaces/tabs with single space
+        $content = preg_replace('/\n\s*\n/', "\n\n", $content); // Normalize multiple newlines
         $content = trim($content);
         
         // Limit content length to prevent abuse (max 50,000 characters)
@@ -570,8 +572,14 @@ class Audio_Press_AI {
             $content = substr($content, 0, 50000);
         }
         
-        if (empty($content)) {
+        // Final check: ensure content has actual text (not just whitespace)
+        if (empty($content) || strlen(trim($content)) === 0) {
             wp_send_json_error(array('message' => __('Post content is empty after processing', 'audio-press-ai')));
+        }
+        
+        // Debug: log content length (only in dev mode)
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('Audio-Press AI: Content length: ' . strlen($content) . ' chars, preview: ' . substr($content, 0, 100));
         }
         
         // Delete old audio if exists (regeneration)
@@ -889,12 +897,14 @@ class Audio_Press_AI {
         $url = $base_url . '/generate';
         
         // Sanitize all inputs
+        // Note: text is already cleaned in ajax_generate_audio, so we send it as-is
+        // to preserve all characters needed for TTS
         $body = array(
             'license_key' => sanitize_text_field($license_key),
             'wp_user_id' => absint($wp_user_id),
             'model' => sanitize_text_field($model),
             'voice' => sanitize_text_field($voice),
-            'text' => sanitize_textarea_field($text) // More appropriate for text content
+            'text' => $text // Send text as-is (already cleaned in ajax_generate_audio)
         );
         
         // Add language if provided

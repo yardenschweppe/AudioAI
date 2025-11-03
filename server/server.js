@@ -739,7 +739,13 @@ async function upsertLicenseFromValidation(licenseKey, validation) {
         const status = lic.is_active ? 'active' : 'expired';
         const periodRaw = lic.billing_cycle || lic.period || 'monthly';
         const period = ['monthly','yearly','lifetime'].includes(String(periodRaw).toLowerCase()) ? String(periodRaw).toLowerCase() : 'monthly';
-        const is_test = lic.test_mode ? 1 : 0;
+        
+        // is_test should be 1 only for actual test mode (TEST_MODE or TEST license key)
+        // NOT for free/gifted licenses from Freemius (even if Freemius returns test_mode=true)
+        // We check if this is a real Freemius validation (has license ID) vs test mode
+        const isRealFreemiusLicense = !!(lic.id || lic.license_id || lic.user_id);
+        const is_test = (TEST_MODE || licenseKey === 'TEST' || licenseKey === TEST_LICENSE_KEY) && !isRealFreemiusLicense ? 1 : 0;
+        
         const next_renewal_at = lic.next_bill_at ? new Date(lic.next_bill_at) : (lic.expires ? new Date(lic.expires * 1000) : null);
 
         await dbPool.query(
@@ -1260,6 +1266,10 @@ app.post('/generate', async (req, res) => {
         if (typeof text !== 'string' || text.trim().length === 0) {
             return res.status(400).json({ error: 'Text must be a non-empty string' });
         }
+        
+        // Log text length for debugging (first 100 chars only)
+        const textPreview = text.substring(0, 100);
+        console.log(`📝 Received text: length=${text.length}, preview="${textPreview}${text.length > 100 ? '...' : ''}"`);
         
         // Step 1: Rate limit check
         if (!rateLimit(license_key)) {
