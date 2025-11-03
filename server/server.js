@@ -673,16 +673,19 @@ async function validateFreemiusLicense(licenseKey) {
     try {
         // Use Freemius SDK client to validate license
         // The SDK handles all the authorization headers automatically
-        // Endpoint: /plugins/{plugin_id}/licenses/validate.json (not products!)
+        // Note: The SDK may need the full path or a relative path - trying both approaches
+        // Endpoint format: /plugins/{plugin_id}/licenses/validate.json
         const endpoint = `/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`;
         const requestBody = { license_key: licenseKey };
         
         console.log(`🔐 Attempting Freemius validation:`, {
             endpoint: endpoint,
             product_id: FREEMIUS_PRODUCT_ID,
+            base_url: freemius.api.baseUrl,
             license_key_preview: licenseKey.substring(0, 8) + '...'
         });
         
+        // Try using the main client (not license.client which seems to have path issues)
         const response = await freemius.api.client.POST(endpoint, requestBody);
 
         // Debug: log full Freemius response
