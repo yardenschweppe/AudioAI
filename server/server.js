@@ -511,9 +511,27 @@ async function loadUsageFromDB(licenseKey, month) {
         if (rows.length === 0) return null;
         
         const row = rows[0];
+        // Safely parse JSON posts_used
+        let postsUsedSet = new Set();
+        if (row.posts_used) {
+            try {
+                const postsUsedStr = typeof row.posts_used === 'string' ? row.posts_used : JSON.stringify(row.posts_used);
+                if (postsUsedStr && postsUsedStr.trim() !== '' && postsUsedStr !== 'null') {
+                    const parsed = JSON.parse(postsUsedStr);
+                    if (Array.isArray(parsed)) {
+                        postsUsedSet = new Set(parsed.map(String));
+                    }
+                }
+            } catch (jsonError) {
+                console.error(`Error parsing posts_used JSON for ${licenseKey}/${month}:`, jsonError.message);
+                // If JSON is invalid, try to initialize as empty array
+                postsUsedSet = new Set();
+            }
+        }
+        
         return {
             month: row.month,
-            posts_used: new Set(JSON.parse(row.posts_used || '[]')),
+            posts_used: postsUsedSet,
             trial_post_id: row.trial_post_id,
             generate_count: row.generate_count || 0,
             chars_used: row.chars_used || 0,
@@ -837,11 +855,36 @@ async function ensureUsageRow(licenseKey, month) {
 }
 
 async function jsonSearchPost(conn, licenseKey, month, postId) {
-    const [rows] = await conn.query(
-        `SELECT JSON_SEARCH(posts_used,'one',CAST(? AS CHAR),NULL,'$[*]') AS found, posts_used_count FROM \`${DB_TABLE_NAME}\` WHERE license_key=? AND month=? FOR UPDATE`,
-        [String(postId), licenseKey, month]
-    );
-    return rows[0];
+    try {
+        const [rows] = await conn.query(
+            `SELECT JSON_SEARCH(posts_used,'one',CAST(? AS CHAR),NULL,'$[*]') AS found, posts_used_count FROM \`${DB_TABLE_NAME}\` WHERE license_key=? AND month=? FOR UPDATE`,
+            [String(postId), licenseKey, month]
+        );
+        return rows[0];
+    } catch (error) {
+        // If column missing, try to add it and retry
+        if (error.code === 'ER_BAD_FIELD_ERROR' && error.message.includes('posts_used_count')) {
+            console.log(`⚠️  Missing column 'posts_used_count', adding it now...`);
+            try {
+                await conn.query(`ALTER TABLE \`${DB_TABLE_NAME}\` ADD COLUMN \`posts_used_count\` INT UNSIGNED NOT NULL DEFAULT 0`);
+                // Initialize from existing posts_used if any
+                await conn.query(
+                    `UPDATE \`${DB_TABLE_NAME}\` SET posts_used_count = JSON_LENGTH(posts_used) WHERE posts_used IS NOT NULL AND JSON_VALID(posts_used)`
+                );
+                console.log(`✅ Added and initialized 'posts_used_count' column`);
+                // Retry the query
+                const [rows] = await conn.query(
+                    `SELECT JSON_SEARCH(posts_used,'one',CAST(? AS CHAR),NULL,'$[*]') AS found, posts_used_count FROM \`${DB_TABLE_NAME}\` WHERE license_key=? AND month=? FOR UPDATE`,
+                    [String(postId), licenseKey, month]
+                );
+                return rows[0];
+            } catch (alterError) {
+                console.error(`❌ Failed to add column: ${alterError.message}`);
+                throw error; // Re-throw original error
+            }
+        }
+        throw error;
+    }
 }
 
 async function appendPostUsed(conn, licenseKey, month, postId) {
@@ -1698,6 +1741,38 @@ app.post('/usage', async (req, res) => {
 });
 
 /**
+ * Run database migration - add missing columns
+ */
+app.post('/admin/run-migration', async (req, res) => {
+    try {
+        // Simple authentication
+        const adminKey = req.headers['x-admin-key'];
+        if (adminKey !== process.env.ADMIN_KEY) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        
+        if (!dbPool) {
+            return res.status(500).json({ error: 'Database not configured' });
+        }
+        
+        await migrateTablesToNewSchema();
+        
+        res.json({
+            success: true,
+            message: 'Migration completed. Check server logs for details.',
+            table: DB_TABLE_NAME
+        });
+        
+    } catch (error) {
+        console.error('Error in /admin/run-migration:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Internal server error'
+        });
+    }
+});
+
+/**
  * Database setup/migration endpoint - creates tables and columns if needed
  */
 app.post('/admin/setup-database', async (req, res) => {
@@ -1719,7 +1794,7 @@ app.post('/admin/setup-database', async (req, res) => {
                     licenses: DB_LICENSES_TABLE,
                     usage_month: DB_TABLE_NAME
                 },
-                note: 'Both tables created: licenses (license_key, plan_code, status, period, trial_post_id, etc.) and usage_month (monthly usage tracking with JSON posts_used)'
+                note: 'Both tables created/verified: licenses (license_key, plan_code, status, period, trial_post_id, etc.) and usage_month (monthly usage tracking with JSON posts_used). Migration also ran to add missing columns (posts_used_count, duration_sec, etc.). Check server logs for migration details.'
             });
         } else {
             res.status(500).json({
