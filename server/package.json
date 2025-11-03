@@ -14,7 +14,8 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "franc": "^6.2.0",
-    "mysql2": "^3.6.5"
+    "mysql2": "^3.6.5",
+    "oauth-1.0a": "^2.2.6"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

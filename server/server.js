@@ -6,6 +6,7 @@ const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { Freemius } = require('@freemius/sdk');
+const oauth = require('oauth-1.0a');
 
 // MySQL is optional - load only if configured
 let mysql = null;
@@ -671,22 +672,45 @@ async function validateFreemiusLicense(licenseKey) {
     }
     
     try {
-        // Use Freemius SDK client to validate license
-        // The SDK handles all the authorization headers automatically
-        // Note: The SDK may need the full path or a relative path - trying both approaches
-        // Endpoint format: /plugins/{plugin_id}/licenses/validate.json
-        const endpoint = `/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`;
+        // Use direct API call with axios instead of SDK client.POST to avoid path template issues
+        // The Freemius API endpoint format: POST /v1/plugins/{plugin_id}/licenses/validate.json
+        const apiUrl = `https://api.freemius.com/v1/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`;
         const requestBody = { license_key: licenseKey };
         
         console.log(`🔐 Attempting Freemius validation:`, {
-            endpoint: endpoint,
+            url: apiUrl,
             product_id: FREEMIUS_PRODUCT_ID,
-            base_url: freemius.api.baseUrl,
             license_key_preview: licenseKey.substring(0, 8) + '...'
         });
         
-        // Try using the main client (not license.client which seems to have path issues)
-        const response = await freemius.api.client.POST(endpoint, requestBody);
+        // Generate OAuth 1.0 authorization header manually
+        // Freemius uses OAuth 1.0 with API Key and Secret Key
+        const oauthInstance = oauth({
+            consumer: {
+                key: FREEMIUS_API_KEY,
+                secret: FREEMIUS_SECRET_KEY
+            },
+            signature_method: 'HMAC-SHA1',
+            hash_function(baseString, key) {
+                return crypto.createHmac('sha1', key).update(baseString).digest('base64');
+            }
+        });
+        
+        const requestData = {
+            url: apiUrl,
+            method: 'POST'
+        };
+        
+        const authHeader = oauthInstance.toHeader(oauthInstance.authorize(requestData));
+        
+        // Make the API call using axios directly
+        const response = await axios.post(apiUrl, requestBody, {
+            headers: {
+                'Authorization': authHeader.Authorization,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+        });
 
         // Debug: log full Freemius response
         if (response && response.data && response.data.license) {
@@ -719,7 +743,7 @@ async function validateFreemiusLicense(licenseKey) {
             status: error.response?.status || error.status,
             statusText: error.response?.statusText || error.statusText,
             response_data: error.response?.data || error.data || 'no response data',
-            request_endpoint: `/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`,
+            request_url: `https://api.freemius.com/v1/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`,
             product_id: FREEMIUS_PRODUCT_ID,
             license_key_preview: licenseKey.substring(0, 8) + '...'
         };
