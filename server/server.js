@@ -1420,6 +1420,22 @@ app.post('/generate', async (req, res) => {
             // If DB is configured, use getOrValidateLicense (which validates with Freemius AND updates DB)
             if (dbPool) {
                 licRow = await getOrValidateLicense(license_key);
+                
+                // If no license in DB and Freemius validation failed, allow trial for new users
+                if (!licRow) {
+                    console.log(`⚠️  No license found in DB for ${license_key.substring(0, 8)}..., allowing trial access`);
+                    // Create a trial license entry in DB
+                    await dbPool.query(
+                        `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, is_test)
+                         VALUES (?, 'trial', 'trialing', 'monthly', 0)
+                         ON DUPLICATE KEY UPDATE plan_code='trial', status='trialing'`,
+                        [license_key]
+                    );
+                    // Reload the license
+                    const [rows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
+                    licRow = rows[0] || null;
+                }
+                
                 if (!licRow || !['trialing','active'].includes(licRow.status)) {
                     return res.status(403).json({ error: 'Invalid or inactive license' });
                 }
@@ -1469,8 +1485,11 @@ app.post('/generate', async (req, res) => {
                 if (!already) {
                     // Use PLAN_POST_LIMITS constant, fallback to trial (1) if plan not found
                     const limit = PLAN_POST_LIMITS[planCode] ?? PLAN_POST_LIMITS.trial;
-                    const usedCount = Number(row?.posts_used_count) || 0;
-                    console.log(`📊 Quota check: plan=${planCode}, used=${usedCount}, limit=${limit}, limit_from_const=${PLAN_POST_LIMITS[planCode] !== undefined}`);
+                    // If row is null/undefined (first time), usedCount is 0
+                    const usedCount = row ? (Number(row.posts_used_count) || 0) : 0;
+                    console.log(`📊 Quota check: plan=${planCode}, used=${usedCount}, limit=${limit}, limit_from_const=${PLAN_POST_LIMITS[planCode] !== undefined}, row_exists=${!!row}`);
+                    
+                    // Allow if usedCount is less than limit (0 < 1 for trial)
                     if (usedCount >= limit) {
                         await conn.rollback();
                         return res.status(402).json({ 
