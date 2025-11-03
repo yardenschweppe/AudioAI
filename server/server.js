@@ -236,7 +236,8 @@ CREATE TABLE IF NOT EXISTS \`${DB_TABLE_NAME}\` (
         await dbPool.query(createLicensesDDL);
         await dbPool.query(createUsageMonthDDL);
         
-        // DDL is authoritative; no migrations
+        // Migrate: add missing columns to existing tables
+        await migrateTablesToNewSchema();
         
         console.log(`✅ Database initialized: ${DB_CONFIG.database}.${DB_TABLE_NAME} and ${DB_LICENSES_TABLE}`);
         return true;
@@ -253,7 +254,120 @@ CREATE TABLE IF NOT EXISTS \`${DB_TABLE_NAME}\` (
 }
 
 /**
- * Migrate tables - add missing columns if needed
+ * Migrate tables to new schema (licenses + usage_month with new columns)
+ */
+async function migrateTablesToNewSchema() {
+    if (!dbPool) return;
+    
+    try {
+        // Check usage_month table columns
+        const [usageColumns] = await dbPool.query(`SHOW COLUMNS FROM \`${DB_TABLE_NAME}\``);
+        const usageColumnNames = usageColumns.map(col => col.Field);
+        
+        // Required columns for usage_month (new schema)
+        const requiredUsageColumns = {
+            'posts_used_count': 'INT UNSIGNED NOT NULL DEFAULT 0',
+            'duration_sec': 'INT UNSIGNED NOT NULL DEFAULT 0'
+        };
+        
+        // Add missing columns to usage_month
+        for (const [columnName, columnDef] of Object.entries(requiredUsageColumns)) {
+            if (!usageColumnNames.includes(columnName)) {
+                try {
+                    await dbPool.query(`ALTER TABLE \`${DB_TABLE_NAME}\` ADD COLUMN \`${columnName}\` ${columnDef}`);
+                    console.log(`   ✅ Added missing column '${columnName}' to ${DB_TABLE_NAME}`);
+                } catch (alterError) {
+                    console.log(`   ⚠️  Could not add column '${columnName}': ${alterError.message}`);
+                }
+            }
+        }
+        
+        // Initialize posts_used_count from posts_used JSON array length if column exists but is 0
+        try {
+            const [rows] = await dbPool.query(
+                `SELECT COUNT(*) as count FROM \`${DB_TABLE_NAME}\` 
+                 WHERE posts_used IS NOT NULL AND JSON_VALID(posts_used) 
+                 AND (posts_used_count = 0 OR posts_used_count IS NULL)`
+            );
+            if (rows[0] && rows[0].count > 0) {
+                await dbPool.query(
+                    `UPDATE \`${DB_TABLE_NAME}\` 
+                     SET posts_used_count = JSON_LENGTH(posts_used) 
+                     WHERE posts_used IS NOT NULL AND JSON_VALID(posts_used) 
+                     AND (posts_used_count = 0 OR posts_used_count IS NULL)`
+                );
+                console.log(`   ✅ Initialized posts_used_count from existing posts_used data`);
+            }
+        } catch (e) {
+            console.log(`   ⚠️  Could not initialize posts_used_count: ${e.message}`);
+        }
+        
+        // Check licenses table columns
+        const [licenseColumns] = await dbPool.query(`SHOW COLUMNS FROM \`${DB_LICENSES_TABLE}\``);
+        const licenseColumnNames = licenseColumns.map(col => col.Field);
+        
+        // Required columns for licenses (new schema)
+        const requiredLicenseColumns = {
+            'plan_code': 'ENUM(\'trial\',\'starter\',\'creator\',\'pro\',\'agency\',\'unlimited\') NOT NULL DEFAULT \'trial\'',
+            'status': 'ENUM(\'trialing\',\'active\',\'past_due\',\'canceled\',\'expired\') NOT NULL DEFAULT \'trialing\'',
+            'period': 'ENUM(\'monthly\',\'yearly\',\'lifetime\') NOT NULL DEFAULT \'monthly\'',
+            'trial_post_id': 'BIGINT UNSIGNED NULL',
+            'is_test': 'TINYINT(1) NOT NULL DEFAULT 0',
+            'validated_at': 'DATETIME NULL',
+            'next_renewal_at': 'DATETIME NULL'
+        };
+        
+        // Add missing columns to licenses
+        for (const [columnName, columnDef] of Object.entries(requiredLicenseColumns)) {
+            if (!licenseColumnNames.includes(columnName)) {
+                try {
+                    await dbPool.query(`ALTER TABLE \`${DB_LICENSES_TABLE}\` ADD COLUMN \`${columnName}\` ${columnDef}`);
+                    console.log(`   ✅ Added missing column '${columnName}' to ${DB_LICENSES_TABLE}`);
+                } catch (alterError) {
+                    console.log(`   ⚠️  Could not add column '${columnName}': ${alterError.message}`);
+                }
+            }
+        }
+        
+        // Migrate old 'plan' column to 'plan_code' if needed
+        if (licenseColumnNames.includes('plan') && !licenseColumnNames.includes('plan_code')) {
+            try {
+                await dbPool.query(
+                    `UPDATE \`${DB_LICENSES_TABLE}\` 
+                     SET plan_code = LOWER(COALESCE(plan, 'trial')) 
+                     WHERE plan_code IS NULL OR plan_code = ''`
+                );
+                console.log(`   ✅ Migrated 'plan' data to 'plan_code'`);
+            } catch (e) {
+                console.log(`   ⚠️  Could not migrate plan to plan_code: ${e.message}`);
+            }
+        }
+        
+        // Migrate old 'is_active' to 'status' if needed
+        if (licenseColumnNames.includes('is_active') && licenseColumnNames.includes('status')) {
+            try {
+                await dbPool.query(
+                    `UPDATE \`${DB_LICENSES_TABLE}\` 
+                     SET status = CASE 
+                         WHEN is_active = 1 THEN 'active' 
+                         ELSE 'expired' 
+                     END 
+                     WHERE status = 'trialing' OR status IS NULL`
+                );
+                console.log(`   ✅ Migrated 'is_active' data to 'status'`);
+            } catch (e) {
+                console.log(`   ⚠️  Could not migrate is_active to status: ${e.message}`);
+            }
+        }
+        
+    } catch (error) {
+        console.error('⚠️  Migration to new schema failed:', error.message);
+        // Don't throw - allow server to continue
+    }
+}
+
+/**
+ * Migrate tables - add missing columns if needed (legacy - kept for backward compatibility)
  */
 async function migrateTables() {
     if (!dbPool) return;

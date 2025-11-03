@@ -621,12 +621,16 @@ jQuery(document).ready(function($) {
         statusDiv.css('border-left-color', '#2271b1'); // Blue for info
         statusText.text(audioPressAI.generating);
         
-        // Prepare data - ensure post_id is a string/number
+        // Prepare data - ensure post_id is valid before sending
         var ajaxData = {
             action: 'audio_press_ai_generate',
-            post_id: String(currentPostId), // Ensure it's a string
             nonce: audioPressAI.nonce
         };
+        
+        // Only add post_id if it's valid (not empty, not 0, not '0')
+        if (currentPostId && currentPostId !== '0' && currentPostId !== '') {
+            ajaxData.post_id = String(currentPostId);
+        }
         
         // Add language if selected
         if (selectedLanguage) {

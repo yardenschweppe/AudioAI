@@ -480,13 +480,27 @@ class Audio_Press_AI {
         }
         
         // Validate and sanitize post ID
-        if (!isset($_POST['post_id']) || empty($_POST['post_id'])) {
-            wp_send_json_error(array('message' => __('Post ID is required', 'audio-press-ai')));
+        $post_id = 0;
+        if (isset($_POST['post_id']) && !empty($_POST['post_id']) && is_numeric($_POST['post_id'])) {
+            $post_id = absint($_POST['post_id']);
         }
         
-        $post_id = absint($_POST['post_id']);
-        if (!$post_id || !is_numeric($_POST['post_id'])) {
-            wp_send_json_error(array('message' => __('Invalid post ID', 'audio-press-ai')));
+        // If post_id is still 0, try to get from WordPress context
+        if (!$post_id) {
+            global $post;
+            if (isset($post) && $post && isset($post->ID) && $post->ID > 0) {
+                $post_id = absint($post->ID);
+            } else {
+                $the_id = get_the_ID();
+                if ($the_id && $the_id > 0) {
+                    $post_id = absint($the_id);
+                }
+            }
+        }
+        
+        // Final validation - post_id must be valid
+        if (!$post_id || $post_id <= 0) {
+            wp_send_json_error(array('message' => __('Post ID is required. Please save the post first as a draft or publish it.', 'audio-press-ai')));
         }
         
         // Check user can edit this specific post
@@ -887,8 +901,21 @@ class Audio_Press_AI {
         if ($language) {
             $body['language'] = sanitize_text_field($language);
         }
+        // Always send post_id (required by server for DB tracking)
         if ($post_id) {
             $body['post_id'] = absint($post_id);
+        } else {
+            // If post_id is missing, try to get from global $post
+            global $post;
+            if (isset($post) && $post && isset($post->ID)) {
+                $body['post_id'] = absint($post->ID);
+            } else {
+                // Last resort: try get_the_ID()
+                $the_id = get_the_ID();
+                if ($the_id) {
+                    $body['post_id'] = absint($the_id);
+                }
+            }
         }
         
         // Validate text length
