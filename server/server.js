@@ -713,7 +713,7 @@ async function validateFreemiusLicense(licenseKey) {
     }
     
     try {
-        const resourceUrl = `:/developers/${FREEMIUS_DEVELOPER_ID}/plugins/${FREEMIUS_PLUGIN_ID}/licenses/validate.json`;
+        const resourceUrl = `/developers/${FREEMIUS_DEVELOPER_ID}/plugins/${FREEMIUS_PLUGIN_ID}/licenses/validate.json`;
         const url = `${FREEMIUS_API_URL}/${FREEMIUS_DEVELOPER_ID}/plugins/${FREEMIUS_PLUGIN_ID}/licenses/validate.json`;
         
         const requestBody = {
