@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { Freemius } = require('@freemius/sdk');
 
 // MySQL is optional - load only if configured
 let mysql = null;
@@ -41,11 +42,23 @@ app.use(express.json());
 
 // Configuration
 // אפשר להגדיר ב-.env או בקוד (קודם מנסה .env, אחרת ערך ברירת מחדל)
-const FREEMIUS_API_URL = 'https://api.freemius.com/v1/developers';
-const FREEMIUS_DEVELOPER_ID = process.env.FREEMIUS_DEVELOPER_ID || 21493;
-const FREEMIUS_PUBLIC_KEY = process.env.FREEMIUS_PUBLIC_KEY || 'pk_c1f4731e093f2279f624161d5ee8b';
+const FREEMIUS_PRODUCT_ID = process.env.FREEMIUS_PRODUCT_ID || process.env.FREEMIUS_PLUGIN_ID || '21493';
+const FREEMIUS_API_KEY = process.env.FREEMIUS_API_KEY || '322d2192e469bde7e0d0c3fe33afe543';
 const FREEMIUS_SECRET_KEY = process.env.FREEMIUS_SECRET_KEY || 'sk_0MMUBME@.WS)<IG1GLBsW(~w<0b)X';
-const FREEMIUS_PLUGIN_ID = process.env.FREEMIUS_PLUGIN_ID || 21493;
+const FREEMIUS_PUBLIC_KEY = process.env.FREEMIUS_PUBLIC_KEY || 'pk_c1f4731e093f2279f624161d5ee8b';
+
+// Initialize Freemius SDK
+const freemius = new Freemius({
+    productId: FREEMIUS_PRODUCT_ID,
+    apiKey: FREEMIUS_API_KEY,
+    secretKey: FREEMIUS_SECRET_KEY,
+    publicKey: FREEMIUS_PUBLIC_KEY,
+});
+
+// Legacy variables for backward compatibility
+const FREEMIUS_DEVELOPER_ID = process.env.FREEMIUS_DEVELOPER_ID || 21493;
+const FREEMIUS_PLUGIN_ID = process.env.FREEMIUS_PLUGIN_ID || FREEMIUS_PRODUCT_ID;
+const FREEMIUS_API_URL = 'https://api.freemius.com/v1/developers';
 // Piper model paths by language
 // ניתן להגדיר ב-.env: PIPER_MODEL_EN, PIPER_MODEL_ES, PIPER_MODEL_DE, PIPER_MODEL_NL_NL, etc.
 const PIPER_MODELS = {
@@ -93,13 +106,14 @@ const TEST_LICENSE_KEY = 'TEST'; // במקרה של test mode, השתמש ב-"TE
 // Debug: Print environment configuration on startup
 console.log('\n📋 Environment Configuration:');
 console.log(`   TEST_MODE: ${TEST_MODE} (from TEST_MODE=${process.env.TEST_MODE || 'undefined'}, NODE_ENV=${process.env.NODE_ENV || 'undefined'})`);
-console.log(`   FREEMIUS_DEVELOPER_ID: ${FREEMIUS_DEVELOPER_ID}`);
-console.log(`   FREEMIUS_PLUGIN_ID: ${FREEMIUS_PLUGIN_ID}`);
+console.log(`   FREEMIUS_PRODUCT_ID: ${FREEMIUS_PRODUCT_ID}`);
+console.log(`   FREEMIUS_API_KEY: ${FREEMIUS_API_KEY.substring(0, 10)}...`);
 console.log(`   FREEMIUS_PUBLIC_KEY: ${FREEMIUS_PUBLIC_KEY.substring(0, 10)}...`);
+console.log(`   FREEMIUS_SECRET_KEY: ${FREEMIUS_SECRET_KEY.substring(0, 10)}...`);
 if (TEST_MODE) {
     console.log('   ⚠️  TEST MODE ENABLED - Freemius validation will be skipped');
 } else {
-    console.log('   🔐 Freemius validation is ACTIVE');
+    console.log('   🔐 Freemius validation is ACTIVE (using official SDK)');
 }
 
 // Display supported languages
@@ -699,7 +713,7 @@ function generateFSAuthorization(resourceUrl, method, body) {
 }
 
 /**
- * Validate license with Freemius using FS Authorization
+ * Validate license with Freemius using official SDK
  * Note: This function should NOT be called when TEST_MODE is active
  */
 async function validateFreemiusLicense(licenseKey) {
@@ -713,26 +727,15 @@ async function validateFreemiusLicense(licenseKey) {
     }
     
     try {
-        // resourceUrl should be relative path without leading slash (as per Freemius SDK CanonizePath)
-        const resourceUrl = `developers/${FREEMIUS_DEVELOPER_ID}/plugins/${FREEMIUS_PLUGIN_ID}/licenses/validate.json`;
-        const url = `${FREEMIUS_API_URL}/${FREEMIUS_DEVELOPER_ID}/plugins/${FREEMIUS_PLUGIN_ID}/licenses/validate.json`;
-        
-        const requestBody = {
+        // Use Freemius SDK client to validate license
+        // The SDK handles all the authorization headers automatically
+        // Endpoint: /products/{product_id}/licenses/validate.json
+        const response = await freemius.api.client.POST(`/products/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`, {
             license_key: licenseKey
-        };
-        
-        const headers = generateFSAuthorization(resourceUrl, 'POST', requestBody);
-        
-        const response = await axios.post(
-            url,
-            requestBody,
-            {
-                headers: headers
-            }
-        );
+        });
 
         // Debug: log full Freemius response
-        if (response.data && response.data.license) {
+        if (response && response.data && response.data.license) {
             console.log(`📡 Freemius API response for ${licenseKey.substring(0, 8)}...:`, JSON.stringify({
                 plan: response.data.license.plan,
                 plan_name: response.data.license.plan?.name,
@@ -743,18 +746,22 @@ async function validateFreemiusLicense(licenseKey) {
         }
 
         return {
-            valid: response.data.license && response.data.license.is_active,
-            license: response.data.license
+            valid: response.data && response.data.license && response.data.license.is_active,
+            license: response.data?.license
         };
     } catch (error) {
         console.error('Freemius validation error:', JSON.stringify({
-            path: error.response?.data?.path || 'unknown',
-            error: error.response?.data?.error || { message: error.message },
-            request: { license_key: licenseKey.substring(0, 8) + '...', developer_id: FREEMIUS_DEVELOPER_ID, plugin_id: FREEMIUS_PLUGIN_ID }
+            message: error.message,
+            response: error.response?.data || error.data || 'no response data',
+            stack: error.stack?.split('\n').slice(0, 3).join('\n'),
+            request: { 
+                license_key: licenseKey.substring(0, 8) + '...', 
+                product_id: FREEMIUS_PRODUCT_ID 
+            }
         }, null, 2));
         return {
             valid: false,
-            error: error.response?.data?.error?.message || 'License validation failed'
+            error: error.response?.data?.error?.message || error.data?.error?.message || error.message || 'License validation failed'
         };
     }
 }
