@@ -671,73 +671,22 @@ async function validateFreemiusLicense(licenseKey) {
     }
     
     try {
-        // Use direct API call with axios instead of SDK client.POST to avoid path template issues
-        // The Freemius API endpoint format: POST /v1/plugins/{plugin_id}/licenses/validate.json
-        const apiUrl = `https://api.freemius.com/v1/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`;
+        // Use Freemius SDK client to validate license
+        // The SDK handles all the authorization headers automatically
+        // Note: The SDK may need the full path or a relative path - trying both approaches
+        // Endpoint format: /plugins/{plugin_id}/licenses/validate.json
+        const endpoint = `/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`;
         const requestBody = { license_key: licenseKey };
         
         console.log(`🔐 Attempting Freemius validation:`, {
-            url: apiUrl,
+            endpoint: endpoint,
             product_id: FREEMIUS_PRODUCT_ID,
+            base_url: freemius.api.baseUrl,
             license_key_preview: licenseKey.substring(0, 8) + '...'
         });
         
-        // Generate FS Authorization header (Freemius custom authorization scheme)
-        // Format: FS {scope_entity_id}:{scope_entity_public_key}:Base64UrlEncode(sha256(string_to_sign, {scope_entity_secret_key}))
-        // Based on Freemius PHP SDK GenerateAuthorizationParams function
-        
-        const requestBodyString = JSON.stringify(requestBody);
-        // PHP md5() returns hex string (32 chars), used in string_to_sign
-        // Content-MD5 header: PHP SDK uses hex MD5 directly (non-standard but matches Freemius)
-        const contentMd5 = crypto.createHash('md5').update(requestBodyString).digest('hex');
-        const contentType = 'application/json';
-        
-        // PHP date('r') returns RFC 2822 format: "Mon, 03 Nov 2025 21:59:22 +0000"
-        const date = new Date().toUTCString().replace(/GMT$/, '+0000');
-        const method = 'POST';
-        
-        // Extract path from URL for signature (just pathname + query, not full URL)
-        const urlObj = new URL(apiUrl);
-        const resourcePath = urlObj.pathname + (urlObj.search || '');
-        
-        // Build string to sign: METHOD\nCONTENT_MD5_HEX\nCONTENT_TYPE\nDATE\nRESOURCE_PATH
-        // PHP uses hex MD5 (from md5() function) in both string_to_sign and Content-MD5 header
-        const stringToSign = [
-            method,
-            contentMd5, // Use hex MD5 in signature (matches PHP md5() output)
-            contentType,
-            date,
-            resourcePath
-        ].join('\n');
-        
-        // Generate HMAC-SHA256 signature (raw binary)
-        const hmacSignature = crypto
-            .createHmac('sha256', FREEMIUS_SECRET_KEY)
-            .update(stringToSign)
-            .digest('base64'); // Get base64 first
-        
-        // Base64UrlEncode: base64 -> replace + with -, / with _, remove = padding
-        const signature = hmacSignature
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=/g, '');
-        
-        // Determine auth type: FS if secret != public, FSP if secret == public
-        const authType = FREEMIUS_SECRET_KEY !== FREEMIUS_PUBLIC_KEY ? 'FS' : 'FSP';
-        
-        // Build authorization header: FS {id}:{public_key}:{signature}
-        const authorization = `${authType} ${FREEMIUS_PRODUCT_ID}:${FREEMIUS_PUBLIC_KEY}:${signature}`;
-        
-        // Make the API call using axios with FS Authorization
-        const response = await axios.post(apiUrl, requestBody, {
-            headers: {
-                'Authorization': authorization,
-                'Date': date,
-                'Content-MD5': contentMd5, // Use hex MD5 (matches PHP SDK behavior)
-                'Content-Type': contentType,
-                'Accept': 'application/json'
-            }
-        });
+        // Try using the main client (not license.client which seems to have path issues)
+        const response = await freemius.api.client.POST(endpoint, requestBody);
 
         // Debug: log full Freemius response
         if (response && response.data && response.data.license) {
@@ -763,32 +712,14 @@ async function validateFreemiusLicense(licenseKey) {
         };
     } catch (error) {
         // Enhanced error logging
-        // The oauth package may pass data as second parameter in error callback
-        // Check if error has data property or if it's a response object
-        let errorData = null;
-        let statusCode = null;
-        
-        if (error.data) {
-            // oauth package sometimes puts response data in error.data
-            try {
-                errorData = typeof error.data === 'string' ? JSON.parse(error.data) : error.data;
-            } catch (e) {
-                errorData = error.data;
-            }
-        }
-        
-        if (error.statusCode) {
-            statusCode = error.statusCode;
-        }
-        
         const errorDetails = {
             message: error.message,
             name: error.name,
             code: error.code,
-            status: statusCode,
-            statusText: error.statusMessage || error.statusText,
-            response_data: errorData || error.response?.data || error.data || 'no response data',
-            request_url: `https://api.freemius.com/v1/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`,
+            status: error.response?.status || error.status,
+            statusText: error.response?.statusText || error.statusText,
+            response_data: error.response?.data || error.data || 'no response data',
+            request_endpoint: `/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`,
             product_id: FREEMIUS_PRODUCT_ID,
             license_key_preview: licenseKey.substring(0, 8) + '...'
         };
@@ -797,9 +728,7 @@ async function validateFreemiusLicense(licenseKey) {
         console.error('❌ Freemius validation error details:', JSON.stringify(errorDetails, null, 2));
         
         // Also log the full error object if available
-        if (errorData) {
-            console.error('   Full error response data:', JSON.stringify(errorData, null, 2));
-        } else if (error.response) {
+        if (error.response) {
             console.error('   Full error response:', JSON.stringify(error.response.data, null, 2));
         }
         
