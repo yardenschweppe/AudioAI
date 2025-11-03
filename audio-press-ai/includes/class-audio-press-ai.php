@@ -577,7 +577,7 @@ class Audio_Press_AI {
         $language = isset($_POST['language']) ? sanitize_text_field($_POST['language']) : null;
         
         // Call remote API server
-        $response = $this->call_remote_api($api_server_url, $license_key, $wp_user_id, $model, $voice, $content, $language);
+        $response = $this->call_remote_api($api_server_url, $license_key, $wp_user_id, $model, $voice, $content, $language, $post_id);
         
         if (is_wp_error($response)) {
             wp_send_json_error(array('message' => $response->get_error_message()));
@@ -865,7 +865,7 @@ class Audio_Press_AI {
     /**
      * Call remote API server
      */
-    private function call_remote_api($api_url, $license_key, $wp_user_id, $model, $voice, $text, $language = null) {
+    private function call_remote_api($api_url, $license_key, $wp_user_id, $model, $voice, $text, $language = null, $post_id = null) {
         // Validate and sanitize URL
         $base_url = esc_url_raw(rtrim($api_url, '/'));
         if (empty($base_url) || !filter_var($base_url, FILTER_VALIDATE_URL)) {
@@ -886,6 +886,9 @@ class Audio_Press_AI {
         // Add language if provided
         if ($language) {
             $body['language'] = sanitize_text_field($language);
+        }
+        if ($post_id) {
+            $body['post_id'] = absint($post_id);
         }
         
         // Validate text length

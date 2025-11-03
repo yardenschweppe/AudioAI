@@ -30,6 +30,78 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Database: MySQL (licenses, usage_month)
+let mysql;
+let dbPool = null;
+try {
+    mysql = require('mysql2/promise');
+    const DB_HOST = process.env.DB_HOST;
+    const DB_USER = process.env.DB_USER;
+    const DB_PASSWORD = process.env.DB_PASSWORD;
+    const DB_NAME = process.env.DB_NAME;
+    const DB_PORT = process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 3306;
+    if (DB_HOST && DB_USER && DB_NAME) {
+        dbPool = mysql.createPool({
+            host: DB_HOST,
+            user: DB_USER,
+            password: DB_PASSWORD || '',
+            database: DB_NAME,
+            port: DB_PORT,
+            waitForConnections: true,
+            connectionLimit: 10,
+            queueLimit: 0,
+            dateStrings: true
+        });
+    }
+} catch (e) {
+    console.log('⚠️  mysql2 not installed; DB features disabled.');
+}
+
+async function initDatabase() {
+    if (!dbPool) {
+        console.log('⚠️  DB not configured. Set DB_HOST, DB_USER, DB_NAME in .env to enable persistent storage.');
+        return;
+    }
+    const createLicenses = `
+CREATE TABLE IF NOT EXISTS licenses (
+  license_key      VARCHAR(128) PRIMARY KEY,
+  plan_code        ENUM('trial','starter','creator','pro','agency','unlimited') NOT NULL DEFAULT 'trial',
+  status           ENUM('trialing','active','past_due','canceled','expired') NOT NULL DEFAULT 'trialing',
+  period           ENUM('monthly','yearly','lifetime') NOT NULL DEFAULT 'monthly',
+  trial_post_id    BIGINT UNSIGNED NULL,
+  is_test          TINYINT(1) NOT NULL DEFAULT 0,
+  validated_at     DATETIME NULL,
+  next_renewal_at  DATETIME NULL,
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`;
+
+    const createUsageMonth = `
+CREATE TABLE IF NOT EXISTS usage_month (
+  license_key      VARCHAR(128) NOT NULL,
+  month            CHAR(7)      NOT NULL,
+  posts_used       JSON         NOT NULL DEFAULT (JSON_ARRAY()),
+  posts_used_count INT UNSIGNED NOT NULL DEFAULT 0,
+  generate_count   INT UNSIGNED NOT NULL DEFAULT 0,
+  chars_used       BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  duration_sec     INT UNSIGNED NOT NULL DEFAULT 0,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (license_key, month),
+  CONSTRAINT fk_usage_license FOREIGN KEY (license_key)
+    REFERENCES licenses(license_key) ON DELETE CASCADE,
+  KEY idx_month (month)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`;
+
+    const conn = await dbPool.getConnection();
+    try {
+        await conn.query(createLicenses);
+        await conn.query(createUsageMonth);
+        console.log('✅ Database tables ensured (licenses, usage_month)');
+    } finally {
+        conn.release();
+    }
+}
+
 // Configuration
 // אפשר להגדיר ב-.env או בקוד (קודם מנסה .env, אחרת ערך ברירת מחדל)
 const FREEMIUS_API_URL = 'https://api.freemius.com/v1/developers';
@@ -101,10 +173,127 @@ for (const [lang, modelPath] of Object.entries(PIPER_MODELS)) {
 }
 console.log('');
 
-// Note: Audio files are sent directly to WordPress, no storage needed on this server
+// Initialize DB (fire and forget)
+initDatabase().catch(err => {
+    console.error('DB init error:', err);
+});
+
+// Note: Audio files are sent directly to WordPress; metadata stored in DB
 
 // In-memory database for metering (in production, use Redis or PostgreSQL)
-const usageDB = new Map(); // license_key -> { month: '2025-01', chars_used: 0, generate_count: 0, wp_user_ids: Set() }
+const usageDB = new Map(); // legacy in-memory fallback if DB not configured
+
+// Plan post quotas per month (approximate; adjust as needed)
+const PLAN_POST_LIMITS = {
+    trial: 1,
+    starter: 50,
+    creator: 150,
+    pro: 500,
+    agency: 2000,
+    unlimited: Number.MAX_SAFE_INTEGER
+};
+
+async function upsertLicenseFromValidation(licenseKey, validation) {
+    if (!dbPool) return; // if DB missing, skip
+    const isTest = TEST_MODE ? 1 : 0;
+    const plan = (validation && validation.license && (validation.license.plan_title || validation.license.plan_name)) || 'trial';
+    const normPlan = (plan || '').toString().toLowerCase();
+    const plan_code = ['trial','starter','creator','pro','agency','unlimited'].includes(normPlan) ? normPlan : 'trial';
+    const status = (validation && validation.license && (validation.license.is_active ? 'active' : 'expired')) || 'active';
+    const period = (validation && validation.license && (validation.license.billing_cycle || validation.license.period)) || 'monthly';
+    const normPeriod = ['monthly','yearly','lifetime'].includes((period||'').toString().toLowerCase()) ? period.toString().toLowerCase() : 'monthly';
+    const nextRenewal = validation && validation.license && (validation.license.next_bill_at || validation.license.expires);
+
+    const conn = await dbPool.getConnection();
+    try {
+        await conn.query(
+            `INSERT INTO licenses (license_key, plan_code, status, period, is_test, validated_at, next_renewal_at)
+             VALUES (?, ?, ?, ?, ?, NOW(), ?)
+             ON DUPLICATE KEY UPDATE 
+               plan_code=VALUES(plan_code),
+               status=VALUES(status),
+               period=VALUES(period),
+               is_test=VALUES(is_test),
+               validated_at=VALUES(validated_at),
+               next_renewal_at=VALUES(next_renewal_at)`,
+            [licenseKey, plan_code, status, normPeriod, isTest, nextRenewal ? new Date(nextRenewal) : null]
+        );
+    } finally {
+        conn.release();
+    }
+}
+
+async function fetchLicenseRow(licenseKey) {
+    if (!dbPool) return null;
+    const [rows] = await dbPool.query('SELECT * FROM licenses WHERE license_key=?', [licenseKey]);
+    return rows[0] || null;
+}
+
+async function ensureUsageRow(licenseKey, month) {
+    if (!dbPool) return;
+    await dbPool.query(
+        `INSERT IGNORE INTO usage_month (license_key, month) VALUES (?, ?)`,
+        [licenseKey, month]
+    );
+}
+
+async function jsonSearchPost(conn, licenseKey, month, postId) {
+    const [rows] = await conn.query(
+        `SELECT JSON_SEARCH(posts_used,'one',CAST(? AS CHAR),NULL,'$[*]') AS found, posts_used_count
+         FROM usage_month WHERE license_key=? AND month=? FOR UPDATE`,
+        [String(postId), licenseKey, month]
+    );
+    return rows[0];
+}
+
+async function appendPostUsed(conn, licenseKey, month, postId) {
+    await conn.query(
+        `UPDATE usage_month
+         SET posts_used = JSON_ARRAY_APPEND(posts_used,'$',CAST(? AS CHAR)),
+             posts_used_count = posts_used_count + 1
+         WHERE license_key=? AND month=?`,
+        [String(postId), licenseKey, month]
+    );
+}
+
+async function incrementUsageCounters(licenseKey, textLength) {
+    if (!dbPool) {
+        // fallback memory
+        const currentMonth = new Date().toISOString().slice(0, 7);
+        if (!usageDB.has(licenseKey)) usageDB.set(licenseKey, { month: currentMonth, chars_used: 0, generate_count: 0 });
+        const usage = usageDB.get(licenseKey);
+        if (usage.month !== currentMonth) { usage.month = currentMonth; usage.chars_used = 0; usage.generate_count = 0; }
+        usage.chars_used += textLength;
+        usage.generate_count = (usage.generate_count || 0) + 1;
+        return { used: usage.chars_used, limit: MONTHLY_CHAR_LIMIT, remaining: Math.max(0, MONTHLY_CHAR_LIMIT - usage.chars_used), generate_count: usage.generate_count };
+    }
+    const month = new Date().toISOString().slice(0, 7);
+    await ensureUsageRow(licenseKey, month);
+    await dbPool.query(
+        `UPDATE usage_month SET 
+            chars_used = chars_used + ?,
+            generate_count = generate_count + 1
+         WHERE license_key=? AND month=?`,
+        [textLength, licenseKey, month]
+    );
+    const [rows] = await dbPool.query('SELECT chars_used, generate_count FROM usage_month WHERE license_key=? AND month=?', [licenseKey, month]);
+    const u = rows[0] || { chars_used: 0, generate_count: 0 };
+    return { used: Number(u.chars_used)||0, limit: MONTHLY_CHAR_LIMIT, remaining: Math.max(0, MONTHLY_CHAR_LIMIT - (Number(u.chars_used)||0)), generate_count: Number(u.generate_count)||0 };
+}
+
+async function revertCharsOnFailure(licenseKey, textLength) {
+    if (!dbPool) {
+        const usage = usageDB.get(licenseKey);
+        if (usage) usage.chars_used = Math.max(0, usage.chars_used - textLength);
+        return;
+    }
+    const month = new Date().toISOString().slice(0, 7);
+    await dbPool.query(
+        `UPDATE usage_month SET chars_used = GREATEST(chars_used - ?, 0) WHERE license_key=? AND month=?`,
+        [textLength, licenseKey, month]
+    );
+}
+
 
 /**
  * Get product info from Freemius (helper function to find Developer ID)
@@ -221,6 +410,42 @@ async function validateFreemiusLicense(licenseKey) {
             error: error.response?.data?.error?.message || 'License validation failed'
         };
     }
+}
+
+/**
+ * Get or validate license and persist in DB
+ */
+async function getOrValidateLicense(licenseKey) {
+    // TEST_MODE: fake valid license
+    if (TEST_MODE) {
+        const validation = { valid: true, license: { is_active: true, plan_title: 'trial', billing_cycle: 'monthly', test_mode: true } };
+        await upsertLicenseFromValidation(licenseKey, validation);
+        return await fetchLicenseRow(licenseKey);
+    }
+
+    // If DB available, try recent cached license (validated within last 24h)
+    if (dbPool) {
+        const row = await fetchLicenseRow(licenseKey);
+        const now = Date.now();
+        const validatedAt = row && row.validated_at ? new Date(row.validated_at).getTime() : 0;
+        if (row && validatedAt && now - validatedAt < 24 * 3600 * 1000) {
+            return row;
+        }
+    }
+
+    // Validate with Freemius and upsert
+    const validation = await validateFreemiusLicense(licenseKey);
+    if (!validation.valid) {
+        return null;
+    }
+    await upsertLicenseFromValidation(licenseKey, validation);
+    return dbPool ? (await fetchLicenseRow(licenseKey)) : {
+        license_key: licenseKey,
+        plan_code: 'trial',
+        status: 'active',
+        period: 'monthly',
+        is_test: 0
+    };
 }
 
 /**
@@ -533,7 +758,8 @@ app.post('/detect-language', async (req, res) => {
  */
 app.post('/generate', async (req, res) => {
     try {
-        const { license_key, wp_user_id, text, model, voice, language } = req.body;
+        const { license_key, wp_user_id, text, model, voice, language, post_id, wp_post_id } = req.body;
+        const postId = wp_post_id || post_id || null;
         
         // Validate input
         if (!license_key || !text) {
@@ -546,30 +772,71 @@ app.post('/generate', async (req, res) => {
         
         const textLength = text.length;
         
-        // Step 1: Validate license with Freemius (או מצב בדיקה)
+        // Step 1: Validate license & persist (או מצב בדיקה)
         console.log(`Validating license: ${license_key.substring(0, 8)}...`);
-        
-        // מצב בדיקה - דלג על בדיקת Freemius אם זה TEST_MODE
-        // ב-TEST_MODE, אנחנו לא מנסים להתחבר ל-Freemius בכלל
-        let validation;
-        if (TEST_MODE) {
-            console.log('⚠️  TEST MODE: Skipping Freemius validation (Freemius is disabled)');
-            validation = {
-                valid: true,
-                license: { is_active: true, test_mode: true }
-            };
-        } else {
-            validation = await validateFreemiusLicense(license_key);
-            
-            if (!validation.valid) {
-                return res.status(403).json({
-                    error: validation.error || 'Invalid or expired license'
-                });
-            }
+        const licenseRow = await getOrValidateLicense(license_key);
+        if (!licenseRow) {
+            return res.status(403).json({ error: 'Invalid or expired license' });
+        }
+        const planCode = licenseRow.plan_code || 'trial';
+        const status = licenseRow.status || 'active';
+        if (!['trialing','active'].includes(status)) {
+            return res.status(403).json({ error: 'License is not active' });
         }
         
-        // Step 2: Check metering (monthly character limit)
-        const usage = checkAndUpdateUsage(license_key, textLength);
+        // Step 2: Trial lock & post quota enforcement in DB
+        if (dbPool) {
+            if (!postId) {
+                return res.status(400).json({ error: 'post_id is required for usage tracking' });
+            }
+            const conn = await dbPool.getConnection();
+            try {
+                await conn.beginTransaction();
+
+                // Lock license row
+                const [licRows] = await conn.query('SELECT * FROM licenses WHERE license_key=? FOR UPDATE', [license_key]);
+                const lic = licRows[0];
+                if (!lic) {
+                    throw new Error('License row missing');
+                }
+
+                // Trial logic: lock to first post
+                if (lic.plan_code === 'trial') {
+                    if (!lic.trial_post_id) {
+                        await conn.query('UPDATE licenses SET trial_post_id=? WHERE license_key=?', [postId, license_key]);
+                    } else if (String(lic.trial_post_id) !== String(postId)) {
+                        await conn.rollback();
+                        return res.status(402).json({ error: 'Trial locked to another post' });
+                    }
+                }
+
+                const currentMonth = new Date().toISOString().slice(0, 7);
+                // Ensure usage row exists
+                await conn.query('INSERT IGNORE INTO usage_month (license_key, month) VALUES (?, ?)', [license_key, currentMonth]);
+
+                // Lock usage row and check if post already counted
+                const row = await jsonSearchPost(conn, license_key, currentMonth, postId);
+                const alreadyCounted = !!row && row.found !== null;
+                if (!alreadyCounted) {
+                    const postsUsedCount = Number(row.posts_used_count) || 0;
+                    const limit = PLAN_POST_LIMITS[lic.plan_code] ?? PLAN_POST_LIMITS.trial;
+                    if (postsUsedCount >= limit) {
+                        await conn.rollback();
+                        return res.status(402).json({ error: 'Monthly post quota exceeded for plan' });
+                    }
+                    await appendPostUsed(conn, license_key, currentMonth, postId);
+                }
+                await conn.commit();
+            } catch (e) {
+                try { await conn.rollback(); } catch (_) {}
+                throw e;
+            } finally {
+                conn.release();
+            }
+        }
+
+        // Step 3: Check metering (monthly character limit)
+        const usage = await incrementUsageCounters(license_key, textLength);
         
         if (!usage.allowed) {
             return res.status(429).json({
@@ -583,8 +850,8 @@ app.post('/generate', async (req, res) => {
             });
         }
         
-        // Step 2.5: Increment generate counter
-        const generateCount = incrementGenerateCount(license_key, wp_user_id);
+        // Step 3.5: Increment generate counter (DB-backed usage already increments generate_count; fallback for memory)
+        const generateCount = usage.generate_count || incrementGenerateCount(license_key, wp_user_id);
         console.log(`Generate count for license ${license_key.substring(0, 8)}... (WP User ID: ${wp_user_id || 'N/A'}): ${generateCount}`);
         
         // Step 3: Generate audio with Piper
@@ -596,10 +863,7 @@ audioBuffer = await generateAudioWithPiper(text, language || null);
         } catch (audioError) {
             console.error('Audio generation failed:', audioError);
             // Revert usage since generation failed
-            const usageEntry = usageDB.get(license_key);
-            if (usageEntry) {
-                usageEntry.chars_used = Math.max(0, usageEntry.chars_used - textLength);
-            }
+            await revertCharsOnFailure(license_key, textLength);
             return res.status(500).json({
                 error: audioError.message || 'Failed to generate audio'
             });
