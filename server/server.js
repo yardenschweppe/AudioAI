@@ -735,7 +735,31 @@ async function upsertLicenseFromValidation(licenseKey, validation) {
     try {
         const lic = validation?.license || {};
         const planRaw = lic.plan?.name || lic.plan_title || 'trial';
-        const plan_code = String(planRaw || 'trial').toLowerCase();
+        let plan_code = String(planRaw || 'trial').toLowerCase();
+        
+        // Map Freemius plan names to our plan codes
+        // Freemius might return "premium", "professional", etc. - map to our standard codes
+        const planMapping = {
+            'premium': 'pro',
+            'professional': 'pro',
+            'business': 'pro',
+            'enterprise': 'agency',
+            'developer': 'pro',
+            'lifetime': 'unlimited'
+        };
+        
+        // If plan name is in mapping, use mapped value; otherwise keep lowercase
+        if (planMapping[plan_code]) {
+            plan_code = planMapping[plan_code];
+        }
+        
+        // Ensure plan_code is one of our valid values, otherwise default to 'trial'
+        const validPlans = ['trial', 'starter', 'creator', 'pro', 'agency', 'unlimited'];
+        if (!validPlans.includes(plan_code)) {
+            console.log(`⚠️  Unknown plan code "${plan_code}" from Freemius, defaulting to 'trial'`);
+            plan_code = 'trial';
+        }
+        
         const status = lic.is_active ? 'active' : 'expired';
         const periodRaw = lic.billing_cycle || lic.period || 'monthly';
         const period = ['monthly','yearly','lifetime'].includes(String(periodRaw).toLowerCase()) ? String(periodRaw).toLowerCase() : 'monthly';
@@ -1331,6 +1355,7 @@ app.post('/generate', async (req, res) => {
                 return res.status(403).json({ error: 'Invalid or inactive license' });
             }
             const planCode = licRow.plan_code || 'trial';
+            console.log(`📋 License plan_code from DB: ${planCode}, status: ${licRow.status}`);
             const conn = await dbPool.getConnection();
             try {
                 await conn.beginTransaction();
@@ -1347,11 +1372,18 @@ app.post('/generate', async (req, res) => {
                 const row = await jsonSearchPost(conn, license_key, month, effectivePostId);
                 const already = !!row && row.found !== null;
                 if (!already) {
-                    const limit = { trial:1, starter:50, creator:150, pro:500, agency:2000, unlimited:Number.MAX_SAFE_INTEGER }[planCode] ?? 1;
+                    // Use PLAN_POST_LIMITS constant, fallback to trial (1) if plan not found
+                    const limit = PLAN_POST_LIMITS[planCode] ?? PLAN_POST_LIMITS.trial;
                     const usedCount = Number(row?.posts_used_count) || 0;
+                    console.log(`📊 Quota check: plan=${planCode}, used=${usedCount}, limit=${limit}, limit_from_const=${PLAN_POST_LIMITS[planCode] !== undefined}`);
                     if (usedCount >= limit) {
                         await conn.rollback();
-                        return res.status(402).json({ error: 'Monthly post quota exceeded for plan' });
+                        return res.status(402).json({ 
+                            error: 'Monthly post quota exceeded for plan',
+                            plan: planCode,
+                            used: usedCount,
+                            limit: limit
+                        });
                     }
                     await appendPostUsed(conn, license_key, month, effectivePostId);
                 }
