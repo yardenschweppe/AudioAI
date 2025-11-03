@@ -801,10 +801,21 @@ async function getOrValidateLicense(licenseKey) {
         const [rows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [licenseKey]);
         return rows[0] || null;
     }
-    const cached = await loadLicenseFromDB(licenseKey);
-    if (cached) return cached;
+    
+    // Always validate with Freemius to get latest plan_code (even if cached)
+    // This ensures plan_code stays in sync with Freemius
     const validation = await validateFreemiusLicense(licenseKey);
-    if (!validation.valid) return null;
+    if (!validation.valid) {
+        // If validation fails, check if we have a cached license (fallback)
+        const cached = await loadLicenseFromDB(licenseKey);
+        if (cached && cached.status === 'active') {
+            console.log(`⚠️  Freemius validation failed, using cached license for ${licenseKey.substring(0, 8)}...`);
+            return cached;
+        }
+        return null;
+    }
+    
+    // Always update plan_code from Freemius (even if cached)
     await upsertLicenseFromValidation(licenseKey, validation);
     const [rows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [licenseKey]);
     return rows[0] || null;
@@ -1638,28 +1649,27 @@ app.post('/usage', async (req, res) => {
                 license: { is_active: true, test_mode: true }
             };
         } else {
-            // Try to load from cache first
-            const cachedLicense = await loadLicenseFromDB(license_key);
+            // Always validate with Freemius to sync plan_code (same as getOrValidateLicense)
+            validation = await validateFreemiusLicense(license_key);
             
-            if (cachedLicense && cachedLicense.is_active) {
-                validation = {
-                    valid: true,
-                    license: {
-                        is_active: cachedLicense.is_active,
-                        plan: { name: cachedLicense.plan },
-                        expiration: cachedLicense.expires_at ? Math.floor(new Date(cachedLicense.expires_at).getTime() / 1000) : null
-                    }
-                };
-            } else {
-                validation = await validateFreemiusLicense(license_key);
-                
-                if (!validation.valid) {
+            if (!validation.valid) {
+                // Fallback to cached if validation fails
+                const cachedLicense = await loadLicenseFromDB(license_key);
+                if (cachedLicense && cachedLicense.status === 'active') {
+                    validation = {
+                        valid: true,
+                        license: {
+                            is_active: true,
+                            plan: { name: cachedLicense.plan_code || 'trial' }
+                        }
+                    };
+                } else {
                     return res.status(403).json({
                         error: 'Invalid or expired license'
                     });
                 }
-                
-                // Save license info to database
+            } else {
+                // Always update license info in database from Freemius
                 await saveLicenseToDB(license_key, validation);
             }
         }
@@ -1720,6 +1730,86 @@ app.post('/admin/setup-database', async (req, res) => {
         }
     } catch (error) {
         console.error('Error in /admin/setup-database:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Internal server error'
+        });
+    }
+});
+
+/**
+ * Sync all licenses from Freemius - updates plan_code, status, etc. for all licenses in DB
+ */
+app.post('/admin/sync-licenses', async (req, res) => {
+    try {
+        // Simple authentication
+        const adminKey = req.headers['x-admin-key'];
+        if (adminKey !== process.env.ADMIN_KEY) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        
+        if (!dbPool) {
+            return res.status(500).json({ error: 'Database not configured' });
+        }
+        
+        if (TEST_MODE) {
+            return res.status(400).json({ error: 'Cannot sync licenses in TEST_MODE' });
+        }
+        
+        // Get all licenses from DB
+        const [licenses] = await dbPool.query(`SELECT license_key FROM \`${DB_LICENSES_TABLE}\` WHERE is_test = 0`);
+        
+        const results = {
+            total: licenses.length,
+            success: 0,
+            failed: 0,
+            updated: 0,
+            errors: []
+        };
+        
+        console.log(`🔄 Starting sync of ${licenses.length} licenses from Freemius...`);
+        
+        // Sync each license
+        for (const row of licenses) {
+            const licenseKey = row.license_key;
+            try {
+                const validation = await validateFreemiusLicense(licenseKey);
+                if (validation.valid) {
+                    await upsertLicenseFromValidation(licenseKey, validation);
+                    results.success++;
+                    results.updated++;
+                    console.log(`✅ Synced license ${licenseKey.substring(0, 8)}...`);
+                } else {
+                    results.failed++;
+                    results.errors.push({
+                        license_key: licenseKey.substring(0, 8) + '...',
+                        error: validation.error || 'Validation failed'
+                    });
+                    console.log(`❌ Failed to sync license ${licenseKey.substring(0, 8)}...: ${validation.error || 'Validation failed'}`);
+                }
+                
+                // Small delay to avoid rate limiting
+                await new Promise(resolve => setTimeout(resolve, 100));
+            } catch (error) {
+                results.failed++;
+                results.errors.push({
+                    license_key: licenseKey.substring(0, 8) + '...',
+                    error: error.message
+                });
+                console.error(`Error syncing license ${licenseKey.substring(0, 8)}...:`, error.message);
+            }
+        }
+        
+        console.log(`✅ Sync completed: ${results.success} success, ${results.failed} failed`);
+        
+        res.json({
+            success: true,
+            message: `Synced ${results.success} licenses, ${results.failed} failed`,
+            results: results
+        });
+        
+    } catch (error) {
+        console.error('Error in /admin/sync-licenses:', error);
         res.status(500).json({
             success: false,
             error: error.message || 'Internal server error'
