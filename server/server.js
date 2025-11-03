@@ -671,22 +671,26 @@ async function validateFreemiusLicense(licenseKey) {
     }
     
     try {
-        // Use Freemius SDK client to validate license
-        // The SDK handles all the authorization headers automatically
-        // Note: The SDK may need the full path or a relative path - trying both approaches
-        // Endpoint format: /plugins/{plugin_id}/licenses/validate.json
-        const endpoint = `/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`;
+        // Use axios directly with Freemius API
+        // The SDK's client.POST has path issues, so we'll use axios with the proper endpoint
+        // Endpoint: https://api.freemius.com/v1/plugins/{plugin_id}/licenses/validate.json
+        const url = `https://api.freemius.com/v1/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`;
         const requestBody = { license_key: licenseKey };
         
         console.log(`🔐 Attempting Freemius validation:`, {
-            endpoint: endpoint,
+            url: url,
             product_id: FREEMIUS_PRODUCT_ID,
-            base_url: freemius.api.baseUrl,
             license_key_preview: licenseKey.substring(0, 8) + '...'
         });
         
-        // Try using the main client (not license.client which seems to have path issues)
-        const response = await freemius.api.client.POST(endpoint, requestBody);
+        // Use axios with Bearer token (API Key) for authorization
+        // Freemius API uses Bearer token for product-scoped requests
+        const response = await axios.post(url, requestBody, {
+            headers: {
+                'Authorization': `Bearer ${FREEMIUS_API_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
 
         // Debug: log full Freemius response
         if (response && response.data && response.data.license) {
@@ -699,10 +703,10 @@ async function validateFreemiusLicense(licenseKey) {
             }, null, 2));
         } else {
             console.log(`⚠️  Freemius API response structure:`, JSON.stringify({
-                has_data: !!response?.data,
-                has_license: !!response?.data?.license,
-                response_keys: response?.data ? Object.keys(response.data) : [],
-                full_response: response
+                has_data: !!response.data,
+                has_license: !!response.data?.license,
+                response_keys: response.data ? Object.keys(response.data) : [],
+                full_response: response.data
             }, null, 2));
         }
 
