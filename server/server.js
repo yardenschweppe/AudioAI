@@ -85,7 +85,9 @@ let dbPool = null;
 // Development/Test Mode - מאפשר לנסות בלי Freemius
 // הגדר TEST_MODE=true ב-.env או הפעל עם NODE_ENV=development כדי לדלג על בדיקת Freemius לחלוטין
 // ב-TEST_MODE, השרת לא ינסה להתחבר ל-Freemius API בכלל
-const TEST_MODE = process.env.TEST_MODE === 'false' || process.env.NODE_ENV === 'production';
+// TEST_MODE = true רק אם: TEST_MODE='true' ב-.env או NODE_ENV='development'
+// ב-production (NODE_ENV='production'), Freemius תמיד פעיל
+const TEST_MODE = process.env.TEST_MODE === 'true' || process.env.NODE_ENV === 'development';
 const TEST_LICENSE_KEY = 'TEST'; // במקרה של test mode, השתמש ב-"TEST" כ-license_key
 
 // Debug: Print environment configuration on startup
