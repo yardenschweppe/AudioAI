@@ -19,16 +19,16 @@ jQuery(document).ready(function($) {
             id = $container.attr('data-post-id') || $container.data('post-id') || '';
         }
         
-        // Method 2: From WordPress post_ID field (most reliable for classic editor)
-        if (!id || id === '0') {
-            var postIdField = $('#post_id');
-            if (postIdField.length) {
-                var fieldVal = postIdField.val();
-                if (fieldVal && fieldVal !== '0' && fieldVal !== '') {
-                    id = fieldVal;
-                }
-            }
-        }
+		// Method 2: From WordPress post_ID field (most reliable for classic editor)
+		if (!id || id === '0') {
+			var postIdField = $('#post_ID, #post_id');
+			if (postIdField.length) {
+				var fieldVal = postIdField.val();
+				if (fieldVal && fieldVal !== '0' && fieldVal !== '') {
+					id = fieldVal;
+				}
+			}
+		}
         
         // Method 3: Try to get from URL (for edit pages like post.php?post=123&action=edit)
         if (!id || id === '0') {
@@ -53,16 +53,16 @@ jQuery(document).ready(function($) {
             }
         }
         
-        // Method 5: Try to get from form input (sometimes WordPress uses different field names)
-        if (!id || id === '0') {
-            var formInput = $('input[name="post_id"], input[name="post_id"], #post_id');
-            if (formInput.length) {
-                var inputVal = formInput.val();
-                if (inputVal && inputVal !== '0' && inputVal !== '') {
-                    id = inputVal;
-                }
-            }
-        }
+		// Method 5: Try to get from form input (handles Classic/Gutenberg variations)
+		if (!id || id === '0') {
+			var formInput = $('input[name="post_ID"], input[name="post_id"], #post_ID, #post_id');
+			if (formInput.length) {
+				var inputVal = formInput.val();
+				if (inputVal && inputVal !== '0' && inputVal !== '') {
+					id = inputVal;
+				}
+			}
+		}
         
         // Convert to number and validate
         id = parseInt(id, 10);
@@ -87,7 +87,7 @@ jQuery(document).ready(function($) {
     });
     
     // Also listen for the post ID field change (for Gutenberg/Classic Editor)
-    $('#post_id').on('change', function() {
+	$('#post_ID, #post_id').on('change', function() {
         var newPostId = getPostId();
         if (newPostId && newPostId !== postId) {
             postId = newPostId;

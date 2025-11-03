@@ -300,7 +300,7 @@ x-admin-key: your_admin_key_here
 **Example:**
 ```bash
 curl -X POST http://localhost:3004/admin/setup-database \
-  -H "x-admin-key: your_admin_key"
+  -H "x-admin-key:Yarden"
 ```
 
 ---
