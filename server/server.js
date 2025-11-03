@@ -673,8 +673,8 @@ async function validateFreemiusLicense(licenseKey) {
     try {
         // Use Freemius SDK client to validate license
         // The SDK handles all the authorization headers automatically
-        // Endpoint: /products/{product_id}/licenses/validate.json
-        const endpoint = `/products/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`;
+        // Endpoint: /plugins/{plugin_id}/licenses/validate.json (not products!)
+        const endpoint = `/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`;
         const requestBody = { license_key: licenseKey };
         
         console.log(`🔐 Attempting Freemius validation:`, {
@@ -716,21 +716,43 @@ async function validateFreemiusLicense(licenseKey) {
             status: error.response?.status || error.status,
             statusText: error.response?.statusText || error.statusText,
             response_data: error.response?.data || error.data || 'no response data',
-            request_endpoint: `/products/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`,
+            request_endpoint: `/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`,
             product_id: FREEMIUS_PRODUCT_ID,
             license_key_preview: licenseKey.substring(0, 8) + '...'
         };
         
-        console.error('❌ Freemius validation error:', JSON.stringify(errorDetails, null, 2));
+        // Log the full error details first
+        console.error('❌ Freemius validation error details:', JSON.stringify(errorDetails, null, 2));
         
         // Also log the full error object if available
         if (error.response) {
             console.error('   Full error response:', JSON.stringify(error.response.data, null, 2));
         }
         
+        // Log the entire error object for debugging
+        console.error('   Full error object:', {
+            message: error.message,
+            stack: error.stack?.split('\n').slice(0, 5).join('\n'),
+            response: error.response ? {
+                status: error.response.status,
+                statusText: error.response.statusText,
+                data: error.response.data
+            } : null,
+            request: error.request ? 'Request object exists' : null
+        });
+        
+        // Extract error message with better fallback
+        const errorMessage = error.response?.data?.error?.message 
+            || error.data?.error?.message 
+            || error.response?.data?.message
+            || error.message 
+            || 'License validation failed';
+        
+        console.error(`   Error message extracted: "${errorMessage}"`);
+        
         return {
             valid: false,
-            error: error.response?.data?.error?.message || error.data?.error?.message || error.message || 'License validation failed'
+            error: errorMessage
         };
     }
 }
