@@ -55,10 +55,7 @@ const freemius = new Freemius({
     publicKey: FREEMIUS_PUBLIC_KEY,
 });
 
-// Legacy variables for backward compatibility
-const FREEMIUS_DEVELOPER_ID = process.env.FREEMIUS_DEVELOPER_ID || 21493;
-const FREEMIUS_PLUGIN_ID = process.env.FREEMIUS_PLUGIN_ID || FREEMIUS_PRODUCT_ID;
-const FREEMIUS_API_URL = 'https://api.freemius.com/v1/developers';
+// Legacy variables removed - we only use PRODUCT_ID, API_KEY, SECRET_KEY, PUBLIC_KEY now
 // Piper model paths by language
 // ניתן להגדיר ב-.env: PIPER_MODEL_EN, PIPER_MODEL_ES, PIPER_MODEL_DE, PIPER_MODEL_NL_NL, etc.
 const PIPER_MODELS = {
@@ -656,61 +653,8 @@ async function getFreemiusProductInfo(productId, bearerToken) {
     }
 }
 
-/**
- * Generate FS Authorization headers for Freemius API
- * Based on Freemius SDK implementation
- */
-function generateFSAuthorization(resourceUrl, method, body) {
-    const now = new Date();
-    const date = now.toUTCString(); // RFC 2822 format
-    
-    let contentMd5 = '';
-    let contentType = '';
-    
-    if (method === 'POST' || method === 'PUT') {
-        contentType = 'application/json';
-        if (body) {
-            const bodyString = typeof body === 'string' ? body : JSON.stringify(body);
-            contentMd5 = crypto.createHash('md5').update(bodyString).digest('hex');
-        }
-    }
-    
-    // Build string to sign
-    const stringToSign = [
-        method.toUpperCase(),
-        contentMd5,
-        contentType,
-        date,
-        resourceUrl
-    ].join('\n');
-    
-    // Generate HMAC-SHA256 signature
-    const signature = crypto
-        .createHmac('sha256', FREEMIUS_SECRET_KEY)
-        .update(stringToSign)
-        .digest('base64')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=/g, '');
-    
-    // Determine auth type (FS or FSP)
-    const authType = FREEMIUS_SECRET_KEY !== FREEMIUS_PUBLIC_KEY ? 'FS' : 'FSP';
-    
-    // Build authorization header
-    const authorization = `${authType} ${FREEMIUS_DEVELOPER_ID}:${FREEMIUS_PUBLIC_KEY}:${signature}`;
-    
-    const headers = {
-        'Date': date,
-        'Authorization': authorization,
-        'Content-Type': contentType || 'application/json'
-    };
-    
-    if (contentMd5) {
-        headers['Content-MD5'] = contentMd5;
-    }
-    
-    return headers;
-}
+// generateFSAuthorization function removed - we now use the official Freemius SDK
+// which handles all authorization automatically
 
 /**
  * Validate license with Freemius using official SDK
@@ -1397,9 +1341,12 @@ app.post('/generate', async (req, res) => {
         }
         
         // Step 2: Validate license with Freemius (או מצב בדיקה)
-        let validation;
+        // Always validate with Freemius to ensure plan_code is up-to-date
         const isTestKey = license_key === 'TEST' || license_key === TEST_LICENSE_KEY;
         const shouldSkipValidation = TEST_MODE || isTestKey;
+        
+        let validation;
+        let licRow = null;
         
         if (shouldSkipValidation) {
             if (TEST_MODE) {
@@ -1411,25 +1358,30 @@ app.post('/generate', async (req, res) => {
                 valid: true,
                 license: { is_active: true, test_mode: true }
             };
+            // If DB is configured, still get/create test license in DB
+            if (dbPool) {
+                licRow = await getOrValidateLicense(license_key);
+            }
         } else {
-            // Try to load from cache first (validated within last 24 hours)
-            const cachedLicense = await loadLicenseFromDB(license_key);
-            
-            if (cachedLicense && cachedLicense.is_active) {
-                // Use cached license info
+            // If DB is configured, use getOrValidateLicense (which validates with Freemius AND updates DB)
+            if (dbPool) {
+                licRow = await getOrValidateLicense(license_key);
+                if (!licRow || !['trialing','active'].includes(licRow.status)) {
+                    return res.status(403).json({ error: 'Invalid or inactive license' });
+                }
+                // Convert DB row to validation format for backward compatibility
                 validation = {
                     valid: true,
                     license: {
-                        is_active: cachedLicense.is_active,
-                        plan: { name: cachedLicense.plan },
-                        expiration: cachedLicense.expires_at ? Math.floor(new Date(cachedLicense.expires_at).getTime() / 1000) : null,
-                        user_id: cachedLicense.freemius_user_id,
-                        id: cachedLicense.freemius_license_id
+                        is_active: licRow.status === 'active' || licRow.status === 'trialing',
+                        plan: { name: licRow.plan_code || 'trial' },
+                        expiration: licRow.next_renewal_at ? Math.floor(new Date(licRow.next_renewal_at).getTime() / 1000) : null,
+                        user_id: licRow.freemius_user_id,
+                        id: licRow.freemius_license_id
                     }
                 };
-                console.log(`Using cached license for: ${license_key.substring(0, 8)}... (plan: ${cachedLicense.plan})`);
             } else {
-                // Validate with Freemius API
+                // No DB - validate directly with Freemius
                 console.log(`Validating license: ${license_key.substring(0, 8)}...`);
                 validation = await validateFreemiusLicense(license_key);
                 
@@ -1438,18 +1390,11 @@ app.post('/generate', async (req, res) => {
                         error: validation.error || 'Invalid or expired license'
                     });
                 }
-                
-                // Save license info to database for caching and future queries
-                await saveLicenseToDB(license_key, validation);
             }
         }
         
         // Step 2.5: If DB is configured, use DB-first enforcement (licenses/usage_month)
-        if (dbPool) {
-            const licRow = await getOrValidateLicense(license_key);
-            if (!licRow || !['trialing','active'].includes(licRow.status)) {
-                return res.status(403).json({ error: 'Invalid or inactive license' });
-            }
+        if (dbPool && licRow) {
             const planCode = licRow.plan_code || 'trial';
             console.log(`📋 License plan_code from DB: ${planCode}, status: ${licRow.status}`);
             const conn = await dbPool.getConnection();
