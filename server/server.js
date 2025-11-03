@@ -6,7 +6,7 @@ const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { Freemius } = require('@freemius/sdk');
-const oauth = require('oauth-1.0a');
+const OAuth = require('oauth');
 
 // MySQL is optional - load only if configured
 let mysql = null;
@@ -683,33 +683,60 @@ async function validateFreemiusLicense(licenseKey) {
             license_key_preview: licenseKey.substring(0, 8) + '...'
         });
         
-        // Generate OAuth 1.0 authorization header manually
-        // Freemius uses OAuth 1.0 with API Key and Secret Key
-        const oauthInstance = oauth({
-            consumer: {
-                key: FREEMIUS_API_KEY,
-                secret: FREEMIUS_SECRET_KEY
-            },
-            signature_method: 'HMAC-SHA1',
-            hash_function(baseString, key) {
-                return crypto.createHmac('sha1', key).update(baseString).digest('base64');
-            }
-        });
+        // Generate OAuth 1.0 authorization header using oauth package
+        // Freemius uses OAuth 1.0 with API Key and Secret Key for server-to-server requests
+        const oauthInstance = new OAuth.OAuth(
+            null, // request token URL (not needed)
+            null, // access token URL (not needed)
+            FREEMIUS_API_KEY, // consumer key
+            FREEMIUS_SECRET_KEY, // consumer secret
+            '1.0', // OAuth version
+            null, // authorize callback URL
+            'HMAC-SHA1' // signature method
+        );
         
-        const requestData = {
-            url: apiUrl,
-            method: 'POST'
-        };
-        
-        const authHeader = oauthInstance.toHeader(oauthInstance.authorize(requestData));
-        
-        // Make the API call using axios directly
-        const response = await axios.post(apiUrl, requestBody, {
-            headers: {
-                'Authorization': authHeader.Authorization,
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            }
+        // Use oauth package's post method with Promise wrapper
+        // The oauth package uses callbacks, so we wrap it in a Promise
+        const response = await new Promise((resolve, reject) => {
+            oauthInstance.post(
+                apiUrl,
+                null, // token (not needed for API key auth)
+                null, // token secret (not needed for API key auth)
+                JSON.stringify(requestBody),
+                'application/json',
+                (error, data, response) => {
+                    // Check for HTTP error status codes (4xx, 5xx)
+                    if (response && response.statusCode && response.statusCode >= 400) {
+                        // Parse error response data
+                        let errorData = null;
+                        try {
+                            errorData = typeof data === 'string' ? JSON.parse(data) : data;
+                        } catch (e) {
+                            errorData = data;
+                        }
+                        const httpError = new Error(errorData?.error?.message || errorData?.message || `HTTP ${response.statusCode}`);
+                        httpError.statusCode = response.statusCode;
+                        httpError.statusMessage = response.statusMessage;
+                        httpError.data = errorData;
+                        reject(httpError);
+                    } else if (error) {
+                        // Network or other errors
+                        reject(error);
+                    } else {
+                        // Success - parse the response data
+                        try {
+                            const parsedData = typeof data === 'string' ? JSON.parse(data) : data;
+                            resolve({
+                                data: parsedData,
+                                status: response?.statusCode || 200,
+                                statusText: response?.statusMessage || 'OK'
+                            });
+                        } catch (parseError) {
+                            reject(new Error(`Failed to parse response: ${parseError.message}`));
+                        }
+                    }
+                }
+            );
         });
 
         // Debug: log full Freemius response
@@ -736,13 +763,31 @@ async function validateFreemiusLicense(licenseKey) {
         };
     } catch (error) {
         // Enhanced error logging
+        // The oauth package may pass data as second parameter in error callback
+        // Check if error has data property or if it's a response object
+        let errorData = null;
+        let statusCode = null;
+        
+        if (error.data) {
+            // oauth package sometimes puts response data in error.data
+            try {
+                errorData = typeof error.data === 'string' ? JSON.parse(error.data) : error.data;
+            } catch (e) {
+                errorData = error.data;
+            }
+        }
+        
+        if (error.statusCode) {
+            statusCode = error.statusCode;
+        }
+        
         const errorDetails = {
             message: error.message,
             name: error.name,
             code: error.code,
-            status: error.response?.status || error.status,
-            statusText: error.response?.statusText || error.statusText,
-            response_data: error.response?.data || error.data || 'no response data',
+            status: statusCode,
+            statusText: error.statusMessage || error.statusText,
+            response_data: errorData || error.response?.data || error.data || 'no response data',
             request_url: `https://api.freemius.com/v1/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`,
             product_id: FREEMIUS_PRODUCT_ID,
             license_key_preview: licenseKey.substring(0, 8) + '...'
@@ -752,7 +797,9 @@ async function validateFreemiusLicense(licenseKey) {
         console.error('❌ Freemius validation error details:', JSON.stringify(errorDetails, null, 2));
         
         // Also log the full error object if available
-        if (error.response) {
+        if (errorData) {
+            console.error('   Full error response data:', JSON.stringify(errorData, null, 2));
+        } else if (error.response) {
             console.error('   Full error response:', JSON.stringify(error.response.data, null, 2));
         }
         
