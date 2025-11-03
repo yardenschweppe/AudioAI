@@ -728,6 +728,17 @@ async function validateFreemiusLicense(licenseKey) {
             }
         );
 
+        // Debug: log full Freemius response
+        if (response.data && response.data.license) {
+            console.log(`📡 Freemius API response for ${licenseKey.substring(0, 8)}...:`, JSON.stringify({
+                plan: response.data.license.plan,
+                plan_name: response.data.license.plan?.name,
+                is_active: response.data.license.is_active,
+                id: response.data.license.id,
+                user_id: response.data.license.user_id
+            }, null, 2));
+        }
+
         return {
             valid: response.data.license && response.data.license.is_active,
             license: response.data.license
@@ -752,8 +763,19 @@ async function upsertLicenseFromValidation(licenseKey, validation) {
     if (!dbPool) return false;
     try {
         const lic = validation?.license || {};
+        
+        // Debug: log what Freemius returns
+        console.log(`🔍 Freemius license data for ${licenseKey.substring(0, 8)}...:`, JSON.stringify({
+            plan: lic.plan,
+            plan_name: lic.plan?.name,
+            plan_title: lic.plan_title,
+            id: lic.id,
+            is_active: lic.is_active
+        }, null, 2));
+        
         const planRaw = lic.plan?.name || lic.plan_title || 'trial';
         let plan_code = String(planRaw || 'trial').toLowerCase();
+        const originalPlanCode = plan_code;
         
         // Map Freemius plan names to our plan codes
         // Freemius might return "premium", "professional", etc. - map to our standard codes
@@ -769,13 +791,16 @@ async function upsertLicenseFromValidation(licenseKey, validation) {
         // If plan name is in mapping, use mapped value; otherwise keep lowercase
         if (planMapping[plan_code]) {
             plan_code = planMapping[plan_code];
+            console.log(`📋 Mapped plan "${originalPlanCode}" → "${plan_code}"`);
         }
         
         // Ensure plan_code is one of our valid values, otherwise default to 'trial'
         const validPlans = ['trial', 'starter', 'creator', 'pro', 'agency', 'unlimited'];
         if (!validPlans.includes(plan_code)) {
-            console.log(`⚠️  Unknown plan code "${plan_code}" from Freemius, defaulting to 'trial'`);
+            console.log(`⚠️  Unknown plan code "${plan_code}" (original: "${originalPlanCode}") from Freemius, defaulting to 'trial'`);
             plan_code = 'trial';
+        } else {
+            console.log(`✅ Final plan_code: "${plan_code}" (original from Freemius: "${originalPlanCode}")`);
         }
         
         const status = lic.is_active ? 'active' : 'expired';
@@ -822,21 +847,28 @@ async function getOrValidateLicense(licenseKey) {
     
     // Always validate with Freemius to get latest plan_code (even if cached)
     // This ensures plan_code stays in sync with Freemius
+    console.log(`🔄 Validating license ${licenseKey.substring(0, 8)}... with Freemius...`);
     const validation = await validateFreemiusLicense(licenseKey);
     if (!validation.valid) {
         // If validation fails, check if we have a cached license (fallback)
         const cached = await loadLicenseFromDB(licenseKey);
         if (cached && cached.status === 'active') {
-            console.log(`⚠️  Freemius validation failed, using cached license for ${licenseKey.substring(0, 8)}...`);
+            console.log(`⚠️  Freemius validation failed, using cached license for ${licenseKey.substring(0, 8)}... (plan_code: ${cached.plan_code})`);
             return cached;
         }
+        console.log(`❌ License validation failed and no valid cache for ${licenseKey.substring(0, 8)}...`);
         return null;
     }
     
     // Always update plan_code from Freemius (even if cached)
+    console.log(`💾 Updating license in DB with latest data from Freemius...`);
     await upsertLicenseFromValidation(licenseKey, validation);
     const [rows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [licenseKey]);
-    return rows[0] || null;
+    const updatedLicense = rows[0] || null;
+    if (updatedLicense) {
+        console.log(`✅ License updated in DB: plan_code=${updatedLicense.plan_code}, status=${updatedLicense.status}`);
+    }
+    return updatedLicense;
 }
 
 // Plan post limits per month
