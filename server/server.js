@@ -1324,23 +1324,41 @@ function runPiper(text, modelPath, outPath) {
 
         // Write text to stdin and end it
         // Piper expects text on stdin, terminated with newline
-        // Using write() then end() to ensure proper buffering
+        // Text should already be normalized (newlines replaced) before calling this function
         try {
-            // Write the text with newline at the end (Piper reads line by line)
+            // Add newline at the end (Piper reads until newline)
             const textWithNewline = textToProcess + '\n';
-            const written = p.stdin.write(textWithNewline, 'utf8');
             
-            if (!written) {
-                // If buffer is full, wait for drain
-                p.stdin.once('drain', () => {
-                    p.stdin.end();
-                });
-            } else {
-                // All data written, end the stream
-                p.stdin.end();
-            }
+            console.log(`   Sending to Piper stdin: length=${textWithNewline.length} chars`);
+            console.log(`   First 50 chars: "${textWithNewline.substring(0, 50)}..."`);
+            console.log(`   Last 50 chars: "...${textWithNewline.substring(Math.max(0, textWithNewline.length - 50))}"`);
+            
+            // Use setImmediate to ensure the process is fully started before writing
+            setImmediate(() => {
+                try {
+                    // Write all at once - Piper should process the entire line
+                    const written = p.stdin.write(textWithNewline, 'utf8');
+                    
+                    if (!written) {
+                        // If buffer is full, wait for drain
+                        console.log(`   ⚠️  stdin buffer full, waiting for drain...`);
+                        p.stdin.once('drain', () => {
+                            console.log(`   ✅ stdin buffer drained, ending stream`);
+                            p.stdin.end();
+                        });
+                    } else {
+                        // All data written, end the stream
+                        console.log(`   ✅ All data written to stdin, ending stream`);
+                        p.stdin.end();
+                    }
+                } catch (writeError) {
+                    console.error(`   ❌ Error writing to stdin: ${writeError.message}`);
+                    reject(new Error(`Failed to write to piper stdin: ${writeError.message}`));
+                }
+            });
         } catch (writeError) {
-            reject(new Error(`Failed to write to piper stdin: ${writeError.message}`));
+            console.error(`   ❌ Error setting up stdin write: ${writeError.message}`);
+            reject(new Error(`Failed to set up stdin write: ${writeError.message}`));
         }
     });
 }
@@ -1684,7 +1702,11 @@ app.post('/generate', async (req, res) => {
         }
         
         // Step 4: Get model for language
-        const { modelPath, language: chosenLanguage } = await getModelForLanguage(text, language || null);
+        // Normalize text: replace all newlines/carriage returns with spaces to ensure Piper processes entire text
+        const normalizedText = textToProcess.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+        console.log(`📝 Normalized text: length=${normalizedText.length} (original: ${textToProcess.length})`);
+        
+        const { modelPath, language: chosenLanguage } = await getModelForLanguage(normalizedText, language || null);
         const tempFilePath = path.join('/tmp', `piper_out_${Date.now()}_${Math.floor(Math.random()*1000)}.wav`);
         
         // Step 5: Schedule audio generation with concurrency control and timeout
@@ -1692,7 +1714,7 @@ app.post('/generate', async (req, res) => {
             const job = () => new Promise(async (resolve, reject) => {
                 const tm = setTimeout(() => reject(new Error('Job timeout')), JOB_TIMEOUT_MS);
                 try {
-                    await synthToWav(text, modelPath, tempFilePath);
+                    await synthToWav(normalizedText, modelPath, tempFilePath);
                     clearTimeout(tm);
                     resolve();
                 } catch (e) { 
@@ -1705,6 +1727,14 @@ app.post('/generate', async (req, res) => {
             
             // Read generated audio
             const audioBuffer = fs.readFileSync(tempFilePath);
+            const fileSize = fs.statSync(tempFilePath).size;
+            
+            console.log(`📊 Generated audio file: size=${fileSize} bytes (${(fileSize / 1024).toFixed(2)} KB)`);
+            
+            // Check if file is suspiciously small (less than 1KB suggests only partial generation)
+            if (fileSize < 1024) {
+                console.warn(`⚠️  WARNING: Generated audio file is very small (${fileSize} bytes). This might indicate Piper only processed part of the text.`);
+            }
             
             if (!audioBuffer || audioBuffer.length === 0) {
                 console.error('Generated audio buffer is empty');
