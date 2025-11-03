@@ -1288,22 +1288,60 @@ function splitIntoTwo(text, maxLen = MAX_CHARS_SPLIT_THRESHOLD) {
  */
 function runPiper(text, modelPath, outPath) {
     return new Promise((resolve, reject) => {
+        // Ensure text is a string and not empty
+        const textToProcess = String(text || "").trim();
+        
+        if (!textToProcess) {
+            return reject(new Error('Text is empty'));
+        }
+        
+        console.log(`🎙️  Running Piper: text_length=${textToProcess.length}, model=${path.basename(modelPath)}, output=${path.basename(outPath)}`);
+        console.log(`   Text preview: "${textToProcess.substring(0, 100)}${textToProcess.length > 100 ? '...' : ''}"`);
+        
         const p = spawn(PIPER_BIN, ["-m", modelPath, "-f", outPath, "-q"], {
             stdio: ["pipe", "ignore", "pipe"],
         });
 
         let err = "";
-        p.stderr.on("data", (d) => (err += d.toString()));
+        p.stderr.on("data", (d) => {
+            const errorMsg = d.toString();
+            err += errorMsg;
+            // Log stderr for debugging (Piper might output warnings here)
+            if (errorMsg.trim()) {
+                console.log(`   Piper stderr: ${errorMsg.trim()}`);
+            }
+        });
 
         p.on("close", (code) => {
             if (code === 0) {
+                console.log(`✅ Piper completed successfully for ${textToProcess.length} chars`);
                 resolve();
             } else {
+                console.error(`❌ Piper exited with code ${code}, error: ${err || 'No error message'}`);
                 reject(new Error(err || `piper exited ${code}`));
             }
         });
 
-        p.stdin.end((text || "") + "\n");
+        // Write text to stdin and end it
+        // Piper expects text on stdin, terminated with newline
+        // Using write() then end() to ensure proper buffering
+        try {
+            // Write the text with newline at the end (Piper reads line by line)
+            const textWithNewline = textToProcess + '\n';
+            const written = p.stdin.write(textWithNewline, 'utf8');
+            
+            if (!written) {
+                // If buffer is full, wait for drain
+                p.stdin.once('drain', () => {
+                    p.stdin.end();
+                });
+            } else {
+                // All data written, end the stream
+                p.stdin.end();
+            }
+        } catch (writeError) {
+            reject(new Error(`Failed to write to piper stdin: ${writeError.message}`));
+        }
     });
 }
 
@@ -1311,12 +1349,18 @@ function runPiper(text, modelPath, outPath) {
  * Synthesize text to WAV file, splitting into two parts if needed and concatenating with ffmpeg
  */
 async function synthToWav(text, modelPath, outFile) {
+    console.log(`🎵 synthToWav: input_text_length=${text.length}, output_file=${path.basename(outFile)}`);
+    
     const parts = splitIntoTwo(text);
+    console.log(`🎵 Split into ${parts.length} part(s)`);
+    
     if (parts.length === 1) { 
+        console.log(`🎵 Processing single part: length=${parts[0].length}`);
         await runPiper(parts[0], modelPath, outFile); 
         return; 
     }
     
+    console.log(`🎵 Processing two parts: part1=${parts[0].length} chars, part2=${parts[1].length} chars`);
     const tmpDir = `/tmp/piper_${Date.now()}`;
     fs.mkdirSync(tmpDir, { recursive: true });
     
@@ -1463,9 +1507,25 @@ app.post('/generate', async (req, res) => {
             return res.status(400).json({ error: 'Text must be a non-empty string' });
         }
         
-        // Log text length for debugging (first 100 chars only)
-        const textPreview = text.substring(0, 100);
-        console.log(`📝 Received text: length=${text.length}, preview="${textPreview}${text.length > 100 ? '...' : ''}"`);
+        // Trim and validate text
+        const trimmedText = text.trim();
+        if (trimmedText.length === 0) {
+            return res.status(400).json({ error: 'Text is empty after trimming' });
+        }
+        
+        // Log text for debugging
+        const textPreview = trimmedText.substring(0, 100);
+        console.log(`📝 Received text: length=${trimmedText.length}, preview="${textPreview}${trimmedText.length > 100 ? '...' : ''}"`);
+        
+        // Log full text for debugging (only first and last 50 chars to avoid huge logs)
+        if (trimmedText.length > 100) {
+            console.log(`📝 Full text: "${trimmedText.substring(0, 50)}...${trimmedText.substring(trimmedText.length - 50)}"`);
+        } else {
+            console.log(`📝 Full text: "${trimmedText}"`);
+        }
+        
+        // Use trimmed text for processing
+        const textToProcess = trimmedText;
         
         // Step 1: Rate limit check
         if (!rateLimit(license_key)) {
@@ -1654,7 +1714,7 @@ app.post('/generate', async (req, res) => {
             }
             
             // Step 6: Update usage counters (DB-first)
-            const textLen = (text || '').length;
+            const textLen = textToProcess.length;
             if (dbPool) {
                 try {
                     await incrementUsageCountersDB(license_key, textLen);
