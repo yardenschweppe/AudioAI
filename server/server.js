@@ -69,23 +69,23 @@ const MAX_CHARS_SPLIT_THRESHOLD = Number(process.env.MAX_CHARS_SPLIT_THRESHOLD |
 // MySQL Database Configuration
 const DB_CONFIG = {
     host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
+    user: process.env.DB_USER || 'audio',
+    password: process.env.DB_PASSWORD || '123456',
     database: process.env.DB_NAME || 'audio_press_ai',
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
 };
 
-const DB_TABLE_NAME = process.env.DB_TABLE_NAME || 'audio_press_usage';
-const DB_LICENSES_TABLE = process.env.DB_LICENSES_TABLE || 'audio_press_licenses';
+const DB_TABLE_NAME = process.env.DB_TABLE_NAME || 'usage_month';
+const DB_LICENSES_TABLE = process.env.DB_LICENSES_TABLE || 'licenses';
 let dbConnection = null;
 let dbPool = null;
 
 // Development/Test Mode - מאפשר לנסות בלי Freemius
 // הגדר TEST_MODE=true ב-.env או הפעל עם NODE_ENV=development כדי לדלג על בדיקת Freemius לחלוטין
 // ב-TEST_MODE, השרת לא ינסה להתחבר ל-Freemius API בכלל
-const TEST_MODE = process.env.TEST_MODE === 'true' || process.env.NODE_ENV === 'development';
+const TEST_MODE = process.env.TEST_MODE === 'false' || process.env.NODE_ENV === 'production';
 const TEST_LICENSE_KEY = 'TEST'; // במקרה של test mode, השתמש ב-"TEST" כ-license_key
 
 // Debug: Print environment configuration on startup
@@ -202,49 +202,41 @@ async function initDatabase() {
             throw dbError;
         }
 
-        // Create usage table if it doesn't exist
-        const createUsageTableSQL = `
-            CREATE TABLE IF NOT EXISTS \`${DB_TABLE_NAME}\` (
-                \`id\` INT AUTO_INCREMENT PRIMARY KEY,
-                \`license_key\` VARCHAR(255) NOT NULL,
-                \`month\` VARCHAR(7) NOT NULL,
-                \`posts_used\` JSON NOT NULL,
-                \`trial_post_id\` VARCHAR(255) DEFAULT NULL,
-                \`generate_count\` INT DEFAULT 0,
-                \`chars_used\` BIGINT DEFAULT 0,
-                \`plan\` VARCHAR(50) DEFAULT NULL,
-                \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                \`updated_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                UNIQUE KEY \`license_month\` (\`license_key\`, \`month\`),
-                KEY \`idx_license_key\` (\`license_key\`),
-                KEY \`idx_month\` (\`month\`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-        `;
+        // Create tables per the required DDL
+        const createLicensesDDL = `
+CREATE TABLE IF NOT EXISTS \`${DB_LICENSES_TABLE}\` (
+  license_key      VARCHAR(128) PRIMARY KEY,
+  plan_code        ENUM('trial','starter','creator','pro','agency','unlimited') NOT NULL DEFAULT 'trial',
+  status           ENUM('trialing','active','past_due','canceled','expired') NOT NULL DEFAULT 'trialing',
+  period           ENUM('monthly','yearly','lifetime') NOT NULL DEFAULT 'monthly',
+  trial_post_id    BIGINT UNSIGNED NULL,
+  is_test          TINYINT(1) NOT NULL DEFAULT 0,
+  validated_at     DATETIME NULL,
+  next_renewal_at  DATETIME NULL,
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`;
+
+        const createUsageMonthDDL = `
+CREATE TABLE IF NOT EXISTS \`${DB_TABLE_NAME}\` (
+  license_key      VARCHAR(128) NOT NULL,
+  month            CHAR(7)      NOT NULL,
+  posts_used       JSON         NOT NULL DEFAULT (JSON_ARRAY()),
+  posts_used_count INT UNSIGNED NOT NULL DEFAULT 0,
+  generate_count   INT UNSIGNED NOT NULL DEFAULT 0,
+  chars_used       BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  duration_sec     INT UNSIGNED NOT NULL DEFAULT 0,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (license_key, month),
+  CONSTRAINT fk_usage_license FOREIGN KEY (license_key)
+    REFERENCES \`${DB_LICENSES_TABLE}\`(license_key) ON DELETE CASCADE,
+  KEY idx_month (month)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`;
+
+        await dbPool.query(createLicensesDDL);
+        await dbPool.query(createUsageMonthDDL);
         
-        // Create licenses table if it doesn't exist (stores license info from Freemius)
-        const createLicensesTableSQL = `
-            CREATE TABLE IF NOT EXISTS \`${DB_LICENSES_TABLE}\` (
-                \`id\` INT AUTO_INCREMENT PRIMARY KEY,
-                \`license_key\` VARCHAR(255) NOT NULL UNIQUE,
-                \`plan\` VARCHAR(50) DEFAULT NULL,
-                \`is_active\` BOOLEAN DEFAULT TRUE,
-                \`expires_at\` DATETIME DEFAULT NULL,
-                \`freemius_user_id\` BIGINT DEFAULT NULL,
-                \`freemius_license_id\` BIGINT DEFAULT NULL,
-                \`validated_at\` TIMESTAMP NULL DEFAULT NULL,
-                \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                \`updated_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                KEY \`idx_license_key\` (\`license_key\`),
-                KEY \`idx_is_active\` (\`is_active\`),
-                KEY \`idx_plan\` (\`plan\`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-        `;
-        
-        await dbPool.query(createUsageTableSQL);
-        await dbPool.query(createLicensesTableSQL);
-        
-        // Migrate/update tables - add missing columns if needed
-        await migrateTables();
+        // DDL is authoritative; no migrations
         
         console.log(`✅ Database initialized: ${DB_CONFIG.database}.${DB_TABLE_NAME} and ${DB_LICENSES_TABLE}`);
         return true;
@@ -458,39 +450,9 @@ async function saveUsageToDB(licenseKey, usage) {
 /**
  * Save or update license information from Freemius validation
  */
+// Replace old saveLicenseToDB with new upsert function
 async function saveLicenseToDB(licenseKey, validation) {
-    if (!dbPool || !validation?.license) return false;
-    
-    try {
-        const license = validation.license;
-        const plan = resolvePlan(validation);
-        const expiresAt = license.expiration ? new Date(license.expiration * 1000) : null;
-        
-        await dbPool.query(
-            `INSERT INTO \`${DB_LICENSES_TABLE}\` 
-             (license_key, plan, is_active, expires_at, freemius_user_id, freemius_license_id, validated_at)
-             VALUES (?, ?, ?, ?, ?, ?, NOW())
-             ON DUPLICATE KEY UPDATE
-             plan = VALUES(plan),
-             is_active = VALUES(is_active),
-             expires_at = VALUES(expires_at),
-             freemius_user_id = VALUES(freemius_user_id),
-             freemius_license_id = VALUES(freemius_license_id),
-             validated_at = NOW()`,
-            [
-                licenseKey,
-                plan,
-                license.is_active || false,
-                expiresAt,
-                license.user_id || null,
-                license.id || null
-            ]
-        );
-        return true;
-    } catch (error) {
-        console.error('Error saving license to DB:', error.message);
-        return false;
-    }
+    return upsertLicenseFromValidation(licenseKey, validation);
 }
 
 /**
@@ -1077,14 +1039,15 @@ app.post('/detect-language', async (req, res) => {
  */
 app.post('/generate', async (req, res) => {
     try {
-        const { text, post_id, license_key, language } = req.body || {};
+        const { text, post_id, wp_post_id, license_key, language } = req.body || {};
+        const effectivePostId = wp_post_id || post_id;
         
         // Validate input
         if (!license_key || !text) {
             return res.status(400).json({ error: 'Missing license_key or text' });
         }
         
-        if (!post_id) {
+        if (!effectivePostId) {
             return res.status(400).json({ error: 'post_id is required' });
         }
         
@@ -1145,7 +1108,47 @@ app.post('/generate', async (req, res) => {
             }
         }
         
-        // Step 3: Get usage and check post-based limits
+        // Step 2.5: If DB is configured, use DB-first enforcement (licenses/usage_month)
+        if (dbPool) {
+            const licRow = await getOrValidateLicense(license_key);
+            if (!licRow || !['trialing','active'].includes(licRow.status)) {
+                return res.status(403).json({ error: 'Invalid or inactive license' });
+            }
+            const planCode = licRow.plan_code || 'trial';
+            const conn = await dbPool.getConnection();
+            try {
+                await conn.beginTransaction();
+                if (planCode === 'trial') {
+                    if (!licRow.trial_post_id) {
+                        await conn.query(`UPDATE \`${DB_LICENSES_TABLE}\` SET trial_post_id=? WHERE license_key=?`, [effectivePostId, license_key]);
+                    } else if (String(licRow.trial_post_id) !== String(effectivePostId)) {
+                        await conn.rollback();
+                        return res.status(402).json({ error: 'Trial locked to another post' });
+                    }
+                }
+                const month = new Date().toISOString().slice(0, 7);
+                await conn.query(`INSERT IGNORE INTO \`${DB_TABLE_NAME}\` (license_key, month) VALUES (?, ?)`, [license_key, month]);
+                const row = await jsonSearchPost(conn, license_key, month, effectivePostId);
+                const already = !!row && row.found !== null;
+                if (!already) {
+                    const limit = { trial:1, starter:50, creator:150, pro:500, agency:2000, unlimited:Number.MAX_SAFE_INTEGER }[planCode] ?? 1;
+                    const usedCount = Number(row?.posts_used_count) || 0;
+                    if (usedCount >= limit) {
+                        await conn.rollback();
+                        return res.status(402).json({ error: 'Monthly post quota exceeded for plan' });
+                    }
+                    await appendPostUsed(conn, license_key, month, effectivePostId);
+                }
+                await conn.commit();
+            } catch (e) {
+                try { await conn.rollback(); } catch(_) {}
+                throw e;
+            } finally {
+                conn.release();
+            }
+        }
+
+        // Step 3: Get usage and check post-based limits (fallback memory)
         const plan = resolvePlan(validation);
         const usage = await getUsage(license_key, plan);
         
@@ -1155,9 +1158,9 @@ app.post('/generate', async (req, res) => {
         // Trial logic (אם אין תכנית בתשלום)
         if (!hasPaid) {
             if (!usage.trial_post_id) {
-                usage.trial_post_id = String(post_id);
+                usage.trial_post_id = String(effectivePostId);
             }
-            if (String(post_id) !== usage.trial_post_id) {
+            if (String(effectivePostId) !== usage.trial_post_id) {
                 return res.status(402).json({ 
                     error: 'ניצלת את הפוסט החינמי. נא לרכוש תכנית.' 
                 });
@@ -1167,7 +1170,7 @@ app.post('/generate', async (req, res) => {
         // מכסה לפי פוסטים/חודש לתוכניות בתשלום
         if (hasPaid) {
             const limit = getPlanLimit(plan);
-            const alreadyUsed = usage.posts_used.has(String(post_id));
+            const alreadyUsed = usage.posts_used.has(String(effectivePostId));
             const usedCount = usage.posts_used.size;
             
             if (!alreadyUsed && isFinite(limit) && usedCount >= limit) {
@@ -1210,16 +1213,19 @@ app.post('/generate', async (req, res) => {
                 });
             }
             
-            // Step 6: Update usage after successful generation
-            // סימון שימוש בפוסט (נספר רק אם חדש)
-            if (!usage.posts_used.has(String(post_id))) {
-                usage.posts_used.add(String(post_id));
+            // Step 6: Update usage counters (DB-first)
+            const textLen = (text || '').length;
+            if (dbPool) {
+                try {
+                    await incrementUsageCountersDB(license_key, textLen);
+                } catch (_) {}
+            } else {
+                if (!usage.posts_used.has(String(effectivePostId))) usage.posts_used.add(String(effectivePostId));
+                usage.generate_count += 1;
+                usage.chars_used += textLen;
+                usage.plan = plan;
+                await updateUsage(license_key, usage);
             }
-            usage.generate_count += 1;
-            // (chars_used אפשר לעדכן לסטטיסטיקה)
-            usage.chars_used += (text || '').length;
-            usage.plan = plan; // שמירת התוכנית
-            await updateUsage(license_key, usage);
             
             // Step 7: Return success response with audio data
             const audioBase64 = audioBuffer.toString('base64');
@@ -1230,7 +1236,7 @@ app.post('/generate', async (req, res) => {
                 audio_data: audioBase64,
                 audio_mime: 'audio/wav',
                 filename: `audio_${Date.now()}.wav`,
-                usage: {
+                usage: dbPool ? undefined : {
                     plan: resolvePlan(validation),
                     used_posts: usage.posts_used.size,
                     limit_posts: getPlanLimit(resolvePlan(validation)),
