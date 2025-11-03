@@ -219,7 +219,7 @@ async function initDatabase() {
         const createLicensesDDL = `
 CREATE TABLE IF NOT EXISTS \`${DB_LICENSES_TABLE}\` (
   license_key      VARCHAR(128) PRIMARY KEY,
-  plan_code        ENUM('trial','starter','creator','pro','agency','unlimited') NOT NULL DEFAULT 'trial',
+  plan_code        VARCHAR(50) NOT NULL DEFAULT 'trial',
   status           ENUM('trialing','active','past_due','canceled','expired') NOT NULL DEFAULT 'trialing',
   period           ENUM('monthly','yearly','lifetime') NOT NULL DEFAULT 'monthly',
   trial_post_id    BIGINT UNSIGNED NULL,
@@ -321,7 +321,7 @@ async function migrateTablesToNewSchema() {
         
         // Required columns for licenses (new schema)
         const requiredLicenseColumns = {
-            'plan_code': 'ENUM(\'trial\',\'starter\',\'creator\',\'pro\',\'agency\',\'unlimited\') NOT NULL DEFAULT \'trial\'',
+            'plan_code': 'VARCHAR(50) NOT NULL DEFAULT \'trial\'',
             'status': 'ENUM(\'trialing\',\'active\',\'past_due\',\'canceled\',\'expired\') NOT NULL DEFAULT \'trialing\'',
             'period': 'ENUM(\'monthly\',\'yearly\',\'lifetime\') NOT NULL DEFAULT \'monthly\'',
             'trial_post_id': 'BIGINT UNSIGNED NULL',
@@ -339,6 +339,24 @@ async function migrateTablesToNewSchema() {
                 } catch (alterError) {
                     console.log(`   ⚠️  Could not add column '${columnName}': ${alterError.message}`);
                 }
+            }
+        }
+        
+        // Migrate plan_code from ENUM to VARCHAR to support Freemius plan names
+        if (licenseColumnNames.includes('plan_code')) {
+            try {
+                const [planCodeColumn] = await dbPool.query(
+                    `SHOW COLUMNS FROM \`${DB_LICENSES_TABLE}\` WHERE Field = 'plan_code'`
+                );
+                if (planCodeColumn.length > 0 && planCodeColumn[0].Type.includes('enum')) {
+                    // Change ENUM to VARCHAR
+                    await dbPool.query(
+                        `ALTER TABLE \`${DB_LICENSES_TABLE}\` MODIFY COLUMN \`plan_code\` VARCHAR(50) NOT NULL DEFAULT 'trial'`
+                    );
+                    console.log(`   ✅ Migrated plan_code from ENUM to VARCHAR (now supports Freemius plan names)`);
+                }
+            } catch (migrateError) {
+                console.log(`   ⚠️  Could not migrate plan_code column: ${migrateError.message}`);
             }
         }
         
@@ -726,6 +744,20 @@ async function validateFreemiusLicense(licenseKey) {
         }
         
         if (licenseData) {
+            // Try to get plan details from API to get the actual plan name
+            let planName = null;
+            try {
+                const planResponse = await freemius.api.client.GET(
+                    `/products/${FREEMIUS_PRODUCT_ID}/plans/${licenseData.plan_id}.json`
+                );
+                if (planResponse?.data) {
+                    planName = planResponse.data.name || planResponse.data.title || null;
+                }
+            } catch (planError) {
+                // If plan endpoint fails, we'll use plan_id mapping
+                console.log(`⚠️  Could not fetch plan details for plan_id ${licenseData.plan_id}, using fallback mapping`);
+            }
+            
             // Map Freemius license fields to our expected format
             const mappedLicense = {
                 id: licenseData.id,
@@ -737,15 +769,16 @@ async function validateFreemiusLicense(licenseKey) {
                 quota: licenseData.quota,
                 activated: licenseData.activated,
                 is_cancelled: licenseData.is_cancelled,
-                // For backward compatibility with existing code
-                plan: { name: `plan_${licenseData.plan_id}` },
-                plan_title: `Plan ${licenseData.plan_id}`
+                // Use actual plan name if available, otherwise use plan_id mapping
+                plan: { name: planName || `plan_${licenseData.plan_id}` },
+                plan_title: planName || `Plan ${licenseData.plan_id}`
             };
             
             console.log(`📡 Freemius API response for ${licenseKey.substring(0, 8)}...:`, JSON.stringify({
                 id: mappedLicense.id,
                 user_id: mappedLicense.user_id,
                 plan_id: mappedLicense.plan_id,
+                plan_name: mappedLicense.plan?.name || mappedLicense.plan_title,
                 is_active: mappedLicense.is_active,
                 expiration: mappedLicense.expiration,
                 activated: mappedLicense.activated,
@@ -841,35 +874,11 @@ async function upsertLicenseFromValidation(licenseKey, validation) {
             is_active: lic.is_active
         }, null, 2));
         
+        // Use Freemius plan name directly (lowercase) - no mapping needed
         const planRaw = lic.plan?.name || lic.plan_title || 'trial';
-        let plan_code = String(planRaw || 'trial').toLowerCase();
-        const originalPlanCode = plan_code;
+        const plan_code = String(planRaw || 'trial').toLowerCase();
         
-        // Map Freemius plan names to our plan codes
-        // Freemius might return "premium", "professional", etc. - map to our standard codes
-        const planMapping = {
-            'premium': 'pro',
-            'professional': 'pro',
-            'business': 'pro',
-            'enterprise': 'agency',
-            'developer': 'pro',
-            'lifetime': 'unlimited'
-        };
-        
-        // If plan name is in mapping, use mapped value; otherwise keep lowercase
-        if (planMapping[plan_code]) {
-            plan_code = planMapping[plan_code];
-            console.log(`📋 Mapped plan "${originalPlanCode}" → "${plan_code}"`);
-        }
-        
-        // Ensure plan_code is one of our valid values, otherwise default to 'trial'
-        const validPlans = ['trial', 'starter', 'creator', 'pro', 'agency', 'unlimited'];
-        if (!validPlans.includes(plan_code)) {
-            console.log(`⚠️  Unknown plan code "${plan_code}" (original: "${originalPlanCode}") from Freemius, defaulting to 'trial'`);
-            plan_code = 'trial';
-        } else {
-            console.log(`✅ Final plan_code: "${plan_code}" (original from Freemius: "${originalPlanCode}")`);
-        }
+        console.log(`✅ Using Freemius plan name directly: "${plan_code}"`);
         
         const status = lic.is_active ? 'active' : 'expired';
         const periodRaw = lic.billing_cycle || lic.period || 'monthly';
@@ -944,13 +953,24 @@ async function getOrValidateLicense(licenseKey) {
 }
 
 // Plan post limits per month
+// Use Freemius plan names directly (e.g., "premium", "professional", etc.)
+// You can add more plans here as needed
 const PLAN_POST_LIMITS = {
-    trial: 1,
-    starter: 50,
-    creator: 150,
-    pro: 500,
-    agency: 2000,
-    unlimited: Number.MAX_SAFE_INTEGER
+    // Default/trial plan
+    trial: Number(process.env.PLAN_LIMIT_TRIAL || 1),
+    // Freemius plan names (use lowercase)
+    premium: Number(process.env.PLAN_LIMIT_PREMIUM || 500),
+    professional: Number(process.env.PLAN_LIMIT_PROFESSIONAL || 500),
+    business: Number(process.env.PLAN_LIMIT_BUSINESS || 500),
+    enterprise: Number(process.env.PLAN_LIMIT_ENTERPRISE || 2000),
+    developer: Number(process.env.PLAN_LIMIT_DEVELOPER || 500),
+    lifetime: Number(process.env.PLAN_LIMIT_LIFETIME || Number.MAX_SAFE_INTEGER),
+    // Legacy plan names (for backward compatibility)
+    starter: Number(process.env.PLAN_LIMIT_STARTER || 50),
+    creator: Number(process.env.PLAN_LIMIT_CREATOR || 150),
+    pro: Number(process.env.PLAN_LIMIT_PRO || 500),
+    agency: Number(process.env.PLAN_LIMIT_AGENCY || 2000),
+    unlimited: Number(process.env.PLAN_LIMIT_UNLIMITED || Number.MAX_SAFE_INTEGER)
 };
 
 async function ensureUsageRow(licenseKey, month) {
@@ -1029,17 +1049,11 @@ function resolvePlan(validation) {
 
 /**
  * Get plan limit (number of posts per month)
+ * Uses PLAN_POST_LIMITS constant which supports Freemius plan names
  */
 function getPlanLimit(plan) {
-    const L = {
-        trial: Number(process.env.PLAN_LIMIT_TRIAL || 1),
-        starter: Number(process.env.PLAN_LIMIT_STARTER || 50),
-        creator: Number(process.env.PLAN_LIMIT_CREATOR || 150),
-        pro: Number(process.env.PLAN_LIMIT_PRO || 500),
-        agency: Number(process.env.PLAN_LIMIT_AGENCY || 2000),
-        unlimited: Infinity,
-    };
-    return L[plan] ?? L[process.env.DEFAULT_PLAN || 'starter'];
+    // Use the global PLAN_POST_LIMITS which includes all Freemius plan names
+    return PLAN_POST_LIMITS[plan] ?? PLAN_POST_LIMITS[process.env.DEFAULT_PLAN || 'trial'] ?? PLAN_POST_LIMITS.trial;
 }
 
 /**
