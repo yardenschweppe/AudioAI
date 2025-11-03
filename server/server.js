@@ -673,42 +673,132 @@ async function validateFreemiusLicense(licenseKey) {
     try {
         // Use Freemius SDK client to validate license
         // The SDK handles all the authorization headers automatically
-        // Note: The SDK may need the full path or a relative path - trying both approaches
-        // Endpoint format: /plugins/{plugin_id}/licenses/validate.json
-        const endpoint = `/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`;
+        // Try alternative endpoint formats since /licenses/validate.json may not exist
+        
+        // Try multiple endpoint variations since /licenses/validate.json doesn't exist
+        // The Freemius API might use different endpoint structures
+        let response;
+        let lastError = null;
+        
+        // Attempt 1: POST to /plugins/{plugin_id}/licenses.json with license_key in body
+        let endpoint = `/plugins/${FREEMIUS_PRODUCT_ID}/licenses.json`;
         const requestBody = { license_key: licenseKey };
         
-        console.log(`🔐 Attempting Freemius validation:`, {
+        console.log(`🔐 Attempting Freemius validation (attempt 1):`, {
             endpoint: endpoint,
+            method: 'POST',
             product_id: FREEMIUS_PRODUCT_ID,
             base_url: freemius.api.baseUrl,
             license_key_preview: licenseKey.substring(0, 8) + '...'
         });
         
-        // Try using the main client (not license.client which seems to have path issues)
-        const response = await freemius.api.client.POST(endpoint, requestBody);
+        try {
+            response = await freemius.api.client.POST(endpoint, requestBody);
+        } catch (error1) {
+            lastError = error1;
+            // Attempt 2: POST to /licenses/validate.json with plugin_id and license_key in body
+            if (error1.response?.status === 400 || error1.response?.status === 404) {
+                console.log(`⚠️  Attempt 1 failed (${error1.response?.status || 'unknown'}), trying /licenses/validate.json...`);
+                endpoint = `/licenses/validate.json`;
+                const validateBody = { 
+                    plugin_id: FREEMIUS_PRODUCT_ID,
+                    license_key: licenseKey 
+                };
+                
+                console.log(`🔐 Attempting Freemius validation (attempt 2):`, {
+                    endpoint: endpoint,
+                    method: 'POST',
+                    product_id: FREEMIUS_PRODUCT_ID,
+                    base_url: freemius.api.baseUrl,
+                    license_key_preview: licenseKey.substring(0, 8) + '...'
+                });
+                
+                try {
+                    response = await freemius.api.client.POST(endpoint, validateBody);
+                } catch (error2) {
+                    lastError = error2;
+                    // Attempt 3: Try GET if SDK supports it (with license_key as query param)
+                    if (error2.response?.status === 400 || error2.response?.status === 404) {
+                        if (typeof freemius.api.client.GET === 'function') {
+                            console.log(`⚠️  Attempt 2 failed (${error2.response?.status || 'unknown'}), trying GET...`);
+                            endpoint = `/plugins/${FREEMIUS_PRODUCT_ID}/licenses.json?license_key=${encodeURIComponent(licenseKey)}`;
+                            
+                            console.log(`🔐 Attempting Freemius validation (attempt 3):`, {
+                                endpoint: endpoint,
+                                method: 'GET',
+                                product_id: FREEMIUS_PRODUCT_ID,
+                                base_url: freemius.api.baseUrl,
+                                license_key_preview: licenseKey.substring(0, 8) + '...'
+                            });
+                            
+                            try {
+                                response = await freemius.api.client.GET(endpoint);
+                            } catch (error3) {
+                                lastError = error3;
+                                throw error3;
+                            }
+                        } else {
+                            throw error2;
+                        }
+                    } else {
+                        throw error2;
+                    }
+                }
+            } else {
+                throw error1;
+            }
+        }
 
         // Debug: log full Freemius response
-        if (response && response.data && response.data.license) {
+        // Handle both single license object and array of licenses
+        let licenseData = null;
+        
+        if (response?.data) {
+            // Check if response is an array (list of licenses)
+            if (Array.isArray(response.data)) {
+                // Find license matching the license_key
+                licenseData = response.data.find(lic => 
+                    lic.license_key === licenseKey || 
+                    lic.key === licenseKey || 
+                    lic.id === licenseKey
+                );
+                if (!licenseData && response.data.length > 0) {
+                    // If no match found but array has items, use first one (might be filtered by query)
+                    licenseData = response.data[0];
+                }
+            } 
+            // Check if response has a license property (single license object)
+            else if (response.data.license) {
+                licenseData = response.data.license;
+            }
+            // Check if response.data itself is a license object
+            else if (response.data.license_key || response.data.key || response.data.id) {
+                licenseData = response.data;
+            }
+        }
+        
+        if (licenseData) {
             console.log(`📡 Freemius API response for ${licenseKey.substring(0, 8)}...:`, JSON.stringify({
-                plan: response.data.license.plan,
-                plan_name: response.data.license.plan?.name,
-                is_active: response.data.license.is_active,
-                id: response.data.license.id,
-                user_id: response.data.license.user_id
+                plan: licenseData.plan,
+                plan_name: licenseData.plan?.name,
+                is_active: licenseData.is_active,
+                id: licenseData.id,
+                user_id: licenseData.user_id,
+                license_key: licenseData.license_key || licenseData.key || 'N/A'
             }, null, 2));
         } else {
             console.log(`⚠️  Freemius API response structure:`, JSON.stringify({
                 has_data: !!response?.data,
-                has_license: !!response?.data?.license,
+                is_array: Array.isArray(response?.data),
                 response_keys: response?.data ? Object.keys(response.data) : [],
+                response_type: typeof response?.data,
                 full_response: response
             }, null, 2));
         }
 
         return {
-            valid: response.data && response.data.license && response.data.license.is_active,
-            license: response.data?.license
+            valid: licenseData && licenseData.is_active === true,
+            license: licenseData
         };
     } catch (error) {
         // Enhanced error logging
@@ -719,7 +809,11 @@ async function validateFreemiusLicense(licenseKey) {
             status: error.response?.status || error.status,
             statusText: error.response?.statusText || error.statusText,
             response_data: error.response?.data || error.data || 'no response data',
-            request_endpoint: `/plugins/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`,
+            attempted_endpoints: [
+                `/plugins/${FREEMIUS_PRODUCT_ID}/licenses.json (POST)`,
+                `/licenses/validate.json (POST)`,
+                `/plugins/${FREEMIUS_PRODUCT_ID}/licenses.json?license_key=... (GET)`
+            ],
             product_id: FREEMIUS_PRODUCT_ID,
             license_key_preview: licenseKey.substring(0, 8) + '...'
         };
