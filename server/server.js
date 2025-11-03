@@ -674,9 +674,16 @@ async function validateFreemiusLicense(licenseKey) {
         // Use Freemius SDK client to validate license
         // The SDK handles all the authorization headers automatically
         // Endpoint: /products/{product_id}/licenses/validate.json
-        const response = await freemius.api.client.POST(`/products/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`, {
-            license_key: licenseKey
+        const endpoint = `/products/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`;
+        const requestBody = { license_key: licenseKey };
+        
+        console.log(`🔐 Attempting Freemius validation:`, {
+            endpoint: endpoint,
+            product_id: FREEMIUS_PRODUCT_ID,
+            license_key_preview: licenseKey.substring(0, 8) + '...'
         });
+        
+        const response = await freemius.api.client.POST(endpoint, requestBody);
 
         // Debug: log full Freemius response
         if (response && response.data && response.data.license) {
@@ -687,6 +694,13 @@ async function validateFreemiusLicense(licenseKey) {
                 id: response.data.license.id,
                 user_id: response.data.license.user_id
             }, null, 2));
+        } else {
+            console.log(`⚠️  Freemius API response structure:`, JSON.stringify({
+                has_data: !!response?.data,
+                has_license: !!response?.data?.license,
+                response_keys: response?.data ? Object.keys(response.data) : [],
+                full_response: response
+            }, null, 2));
         }
 
         return {
@@ -694,15 +708,26 @@ async function validateFreemiusLicense(licenseKey) {
             license: response.data?.license
         };
     } catch (error) {
-        console.error('Freemius validation error:', JSON.stringify({
+        // Enhanced error logging
+        const errorDetails = {
             message: error.message,
-            response: error.response?.data || error.data || 'no response data',
-            stack: error.stack?.split('\n').slice(0, 3).join('\n'),
-            request: { 
-                license_key: licenseKey.substring(0, 8) + '...', 
-                product_id: FREEMIUS_PRODUCT_ID 
-            }
-        }, null, 2));
+            name: error.name,
+            code: error.code,
+            status: error.response?.status || error.status,
+            statusText: error.response?.statusText || error.statusText,
+            response_data: error.response?.data || error.data || 'no response data',
+            request_endpoint: `/products/${FREEMIUS_PRODUCT_ID}/licenses/validate.json`,
+            product_id: FREEMIUS_PRODUCT_ID,
+            license_key_preview: licenseKey.substring(0, 8) + '...'
+        };
+        
+        console.error('❌ Freemius validation error:', JSON.stringify(errorDetails, null, 2));
+        
+        // Also log the full error object if available
+        if (error.response) {
+            console.error('   Full error response:', JSON.stringify(error.response.data, null, 2));
+        }
+        
         return {
             valid: false,
             error: error.response?.data?.error?.message || error.data?.error?.message || error.message || 'License validation failed'
@@ -804,10 +829,14 @@ async function getOrValidateLicense(licenseKey) {
     console.log(`🔄 Validating license ${licenseKey.substring(0, 8)}... with Freemius...`);
     const validation = await validateFreemiusLicense(licenseKey);
     if (!validation.valid) {
+        // Log the error details for debugging
+        console.error(`❌ Freemius validation failed for ${licenseKey.substring(0, 8)}...: ${validation.error || 'Unknown error'}`);
+        
         // If validation fails, check if we have a cached license (fallback)
         const cached = await loadLicenseFromDB(licenseKey);
         if (cached && cached.status === 'active') {
-            console.log(`⚠️  Freemius validation failed, using cached license for ${licenseKey.substring(0, 8)}... (plan_code: ${cached.plan_code})`);
+            console.log(`⚠️  Freemius validation failed, using cached license for ${licenseKey.substring(0, 8)}... (plan_code: ${cached.plan_code}, status: ${cached.status})`);
+            console.log(`   Note: This is a fallback. The license should be validated with Freemius to get the latest plan_code.`);
             return cached;
         }
         console.log(`❌ License validation failed and no valid cache for ${licenseKey.substring(0, 8)}...`);
