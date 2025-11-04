@@ -351,6 +351,35 @@ class Audio_Press_AI {
         (function() {
             'use strict';
             
+            // Make sure we wait for jQuery if it's not loaded yet
+            if (typeof jQuery === 'undefined') {
+                // Wait for jQuery to load
+                var checkJQuery = setInterval(function() {
+                    if (typeof jQuery !== 'undefined') {
+                        clearInterval(checkJQuery);
+                        initAudioPressAITest();
+                    }
+                }, 100);
+                
+                // Give up after 10 seconds
+                setTimeout(function() {
+                    clearInterval(checkJQuery);
+                    if (typeof jQuery === 'undefined') {
+                        console.error('Audio-Press AI: jQuery not loaded after 10 seconds');
+                    }
+                }, 10000);
+            } else {
+                // jQuery is already loaded, start initialization
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', initAudioPressAITest);
+                } else {
+                    // DOM is already ready
+                    setTimeout(initAudioPressAITest, 100);
+                }
+            }
+            
+            function initAudioPressAITest() {
+            
             // Define available voices for each language
             var languageVoices = {
                 'en': [
@@ -440,20 +469,34 @@ class Audio_Press_AI {
                 
                 function check() {
                     attempts++;
-                    if (typeof jQuery !== 'undefined' && jQuery('#audio-press-ai-test-language').length && jQuery('#audio-press-ai-test-voice').length) {
+                    var $langSelect = typeof jQuery !== 'undefined' ? jQuery('#audio-press-ai-test-language') : null;
+                    var $voiceSelect = typeof jQuery !== 'undefined' ? jQuery('#audio-press-ai-test-voice') : null;
+                    
+                    if (typeof jQuery !== 'undefined' && $langSelect && $langSelect.length && $voiceSelect && $voiceSelect.length) {
+                        console.log('Audio-Press AI: Elements found, initializing...');
                         callback();
                     } else if (attempts < maxAttempts) {
                         setTimeout(check, 100);
                     } else {
                         console.error('Audio-Press AI: Failed to find elements after ' + maxAttempts + ' attempts');
-                        // Try to initialize anyway
+                        console.error('Audio-Press AI: jQuery available:', typeof jQuery !== 'undefined');
                         if (typeof jQuery !== 'undefined') {
+                            console.error('Audio-Press AI: Language select found:', jQuery('#audio-press-ai-test-language').length);
+                            console.error('Audio-Press AI: Voice select found:', jQuery('#audio-press-ai-test-voice').length);
+                            // Try to initialize anyway
                             callback();
                         }
                     }
                 }
                 
-                check();
+                // Start checking after a short delay to ensure DOM is ready
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', function() {
+                        setTimeout(check, 100);
+                    });
+                } else {
+                    setTimeout(check, 100);
+                }
             }
             
             // Initialize when everything is ready
@@ -461,11 +504,36 @@ class Audio_Press_AI {
                 var $ = jQuery;
                 console.log('Audio-Press AI: Test script loaded');
                 
+                // Double-check elements exist
+                var $languageSelect = $('#audio-press-ai-test-language');
+                var $voiceSelect = $('#audio-press-ai-test-voice');
+                
+                if (!$languageSelect.length) {
+                    console.error('Audio-Press AI: Language select not found!');
+                    return;
+                }
+                
+                if (!$voiceSelect.length) {
+                    console.error('Audio-Press AI: Voice select not found!');
+                    return;
+                }
+                
+                console.log('Audio-Press AI: Both selects found, initializing voice options...');
+                
                 // Initialize voice options for default language
-                updateVoiceOptions();
+                var result = updateVoiceOptions();
+                
+                if (!result) {
+                    console.error('Audio-Press AI: Failed to update voice options');
+                    // Try again after a short delay
+                    setTimeout(function() {
+                        updateVoiceOptions();
+                    }, 500);
+                }
                 
                 // Update voice options when language changes
-                jQuery('#audio-press-ai-test-language').on('change', function() {
+                $languageSelect.on('change', function() {
+                    console.log('Audio-Press AI: Language changed, updating voices...');
                     updateVoiceOptions();
                 });
                 
@@ -657,6 +725,9 @@ class Audio_Press_AI {
                     }
                 });
             });
+            
+            } // End of initAudioPressAITest function
+            
         })();
         </script>
         <?php
@@ -1919,15 +1990,24 @@ class Audio_Press_AI {
         $player_html .= '</div>';
         
         // Add inline JavaScript to initialize player
+        // Wait for DOM to be ready before initializing
         $player_html .= '<script>';
         $player_html .= '(function() {';
+        $player_html .= 'function initPlayer() {';
         $player_html .= 'var audio = document.getElementById("' . esc_js($unique_id) . '-audio-element");';
-        $player_html .= 'if (!audio) return;';
+        $player_html .= 'if (!audio) {';
+        $player_html .= 'setTimeout(initPlayer, 100);';
+        $player_html .= 'return;';
+        $player_html .= '}';
         $player_html .= 'var playPauseBtn = document.getElementById("' . esc_js($unique_id) . '-play-pause");';
         $player_html .= 'var progressBar = document.getElementById("' . esc_js($unique_id) . '-progress");';
         $player_html .= 'var progressWrapper = document.getElementById("' . esc_js($unique_id) . '-progress-wrapper");';
         $player_html .= 'var timeCurrent = document.getElementById("' . esc_js($unique_id) . '-time-current");';
         $player_html .= 'var timeTotal = document.getElementById("' . esc_js($unique_id) . '-time-total");';
+        $player_html .= 'if (!playPauseBtn || !progressBar || !progressWrapper || !timeCurrent || !timeTotal) {';
+        $player_html .= 'setTimeout(initPlayer, 100);';
+        $player_html .= 'return;';
+        $player_html .= '}';
         
         $player_html .= 'function formatTime(seconds) {';
         $player_html .= 'if (isNaN(seconds) || !isFinite(seconds)) return "0:00";';
@@ -1998,15 +2078,21 @@ class Audio_Press_AI {
         $player_html .= 'if (!isNaN(speed) && speed > 0) {';
         $player_html .= 'audio.playbackRate = speed;';
         $player_html .= 'console.log("Audio speed changed to:", speed + "x");';
-        $player_html .= '// Update time display immediately when speed changes';
         $player_html .= 'updateTime();';
         $player_html .= '}';
         $player_html .= '});';
-        $player_html .= '// Set initial speed to 1x';
         $player_html .= 'audio.playbackRate = 1;';
         $player_html .= '}';
         
         $player_html .= 'audio.load();';
+        $player_html .= '}';
+        
+        // Wait for DOM to be ready
+        $player_html .= 'if (document.readyState === "loading") {';
+        $player_html .= 'document.addEventListener("DOMContentLoaded", initPlayer);';
+        $player_html .= '} else {';
+        $player_html .= 'initPlayer();';
+        $player_html .= '}';
         $player_html .= '})();';
         $player_html .= '</script>';
         
