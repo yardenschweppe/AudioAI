@@ -58,14 +58,24 @@ const freemius = new Freemius({
 // Legacy variables removed - we only use PRODUCT_ID, API_KEY, SECRET_KEY, PUBLIC_KEY now
 // Piper model paths by language
 // ניתן להגדיר ב-.env: PIPER_MODEL_EN, PIPER_MODEL_ES, PIPER_MODEL_DE, PIPER_MODEL_NL_NL, etc.
+// 
+// Available voices per language (set via environment variables):
+// - English (en): ljspeech, kristin, john, bryce (default: ljspeech)
+// - Dutch BE (nl_BE): rdh, nathalie (default: rdh)
+// - Dutch NL (nl_NL): ronnie (default: ronnie)
+// - German (de): thorsten/low, thorsten/high (default: thorsten/low - CC0 license)
+// - Danish (da): talesyntese (default)
+// - Swedish (sv): nst (default)
 const PIPER_MODELS = {
     'en': process.env.PIPER_MODEL_EN || '/opt/piper/voices/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx',
     'es': process.env.PIPER_MODEL_ES || '/opt/piper/voices/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx',
     'pt_PT': process.env.PIPER_MODEL_PT_PT || '/opt/piper/voices/pt/pt_PT/tugao/medium/pt_PT-tugao-medium.onnx',
     'pt_BR': process.env.PIPER_MODEL_PT_BR || '/opt/piper/voices/pt/pt_BR/cadu/medium/pt_BR-cadu-medium.onnx',
-    'de': process.env.PIPER_MODEL_DE || '/opt/piper/voices/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx',
+    'de': process.env.PIPER_MODEL_DE || '/opt/piper/voices/de/de_DE/thorsten/low/de_DE-thorsten-low.onnx',
     'nl_NL': process.env.PIPER_MODEL_NL_NL || '/opt/piper/voices/nl/nl_NL/ronnie/medium/nl_NL-ronnie-medium.onnx',
     'nl_BE': process.env.PIPER_MODEL_NL_BE || '/opt/piper/voices/nl/nl_BE/rdh/medium/nl_BE-rdh-medium.onnx',
+    'da': process.env.PIPER_MODEL_DA || '/opt/piper/voices/da/da_DK/talesyntese/medium/da_DK-talesyntese-medium.onnx',
+    'sv': process.env.PIPER_MODEL_SV || '/opt/piper/voices/sv/sv_SE/nst/medium/sv_SE-nst-medium.onnx',
     // מודלים נוספים (לא מותקנים כרגע):
     'he': process.env.PIPER_MODEL_HE || null, // עברית
     'ar': process.env.PIPER_MODEL_AR || null, // ערבית
@@ -123,6 +133,8 @@ const languageNames = {
     'de': 'Deutsch (German)',
     'nl_NL': 'Nederlands NL (Dutch Netherlands)',
     'nl_BE': 'Nederlands BE (Dutch Belgium)',
+    'da': 'Dansk (Danish)',
+    'sv': 'Svenska (Swedish)',
     'he': 'עברית (Hebrew)', 
     'ar': 'ערבית (Arabic)',
     'ru': 'Русский (Russian)',
@@ -1543,7 +1555,7 @@ app.post('/detect-language', async (req, res) => {
   
       const availableLanguages = Object.keys(PIPER_MODELS).filter(l => PIPER_MODELS[l]);
       const languageNames = { 
-        'en':'English','es':'Español (Spanish)','pt_PT':'Português PT (Portuguese Portugal)','pt_BR':'Português BR (Portuguese Brazil)','de':'Deutsch (German)','nl_NL':'Nederlands NL (Dutch Netherlands)','nl_BE':'Nederlands BE (Dutch Belgium)','he':'עברית (Hebrew)','ar':'ערבית (Arabic)','ru':'Русский (Russian)','zh':'中文/日本語/한국어 (CJK)'
+        'en':'English','es':'Español (Spanish)','pt_PT':'Português PT (Portuguese Portugal)','pt_BR':'Português BR (Portuguese Brazil)','de':'Deutsch (German)','nl_NL':'Nederlands NL (Dutch Netherlands)','nl_BE':'Nederlands BE (Dutch Belgium)','da':'Dansk (Danish)','sv':'Svenska (Swedish)','he':'עברית (Hebrew)','ar':'ערבית (Arabic)','ru':'Русский (Russian)','zh':'中文/日本語/한국어 (CJK)'
       };
   
       res.json({

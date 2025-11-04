@@ -21,6 +21,7 @@ class Audio_Press_AI {
         add_action('wp_ajax_audio_press_ai_generate', array($this, 'ajax_generate_audio'));
         add_action('wp_ajax_audio_press_ai_delete', array($this, 'ajax_delete_audio'));
         add_action('wp_ajax_audio_press_ai_detect_language', array($this, 'ajax_detect_language'));
+        add_action('wp_ajax_audio_press_ai_test_generate', array($this, 'ajax_test_generate'));
         
         // Frontend hooks
         add_filter('the_content', array($this, 'embed_audio_player'), 10);
@@ -150,9 +151,9 @@ class Audio_Press_AI {
      * Register plugin settings
      */
     public function register_settings() {
-        register_setting('audio_press_ai_settings', 'audio_press_ai_api_server_url');
+        // API Server URL is constant - no longer registered as setting
+        // Model/Quality is not used by server - removed
         register_setting('audio_press_ai_settings', 'audio_press_ai_voice');
-        register_setting('audio_press_ai_settings', 'audio_press_ai_model');
         register_setting('audio_press_ai_settings', 'audio_press_ai_auto_embed');
         register_setting('audio_press_ai_settings', 'audio_press_ai_auto_generate');
     }
@@ -169,13 +170,8 @@ class Audio_Press_AI {
         if (isset($_POST['submit'])) {
             check_admin_referer('audio_press_ai_settings');
             
-            // Validate and sanitize API server URL
-            if (isset($_POST['audio_press_ai_api_server_url'])) {
-                $api_url = esc_url_raw(trim($_POST['audio_press_ai_api_server_url']));
-                if (!empty($api_url) && filter_var($api_url, FILTER_VALIDATE_URL)) {
-                    update_option('audio_press_ai_api_server_url', $api_url);
-                }
-            }
+            // API Server URL is constant - no longer editable in UI
+            // It's always set to AUDIO_PRESS_AI_API_URL constant
             
             // Validate and sanitize voice (whitelist)
             if (isset($_POST['audio_press_ai_voice'])) {
@@ -186,14 +182,7 @@ class Audio_Press_AI {
                 }
             }
             
-            // Validate and sanitize model (whitelist)
-            if (isset($_POST['audio_press_ai_model'])) {
-                $allowed_models = array('tts-1', 'tts-1-hd');
-                $model = sanitize_text_field($_POST['audio_press_ai_model']);
-                if (in_array($model, $allowed_models, true)) {
-                    update_option('audio_press_ai_model', $model);
-                }
-            }
+            // Model/Quality option removed - not used by server (Piper TTS is language-based, not model-based)
             
             // Checkbox values
             update_option('audio_press_ai_auto_embed', isset($_POST['audio_press_ai_auto_embed']) ? '1' : '0');
@@ -202,9 +191,9 @@ class Audio_Press_AI {
             echo '<div class="notice notice-success"><p>' . esc_html__('Settings saved!', 'audio-press-ai') . '</p></div>';
         }
         
-        $api_server_url = get_option('audio_press_ai_api_server_url', AUDIO_PRESS_AI_API_URL);
+        // API Server URL is constant - always use the constant, not from options
+        $api_server_url = AUDIO_PRESS_AI_API_URL;
         $voice = get_option('audio_press_ai_voice', 'nova');
-        $model = get_option('audio_press_ai_model', 'tts-1-hd');
         $auto_embed = get_option('audio_press_ai_auto_embed', '1');
         $auto_generate = get_option('audio_press_ai_auto_generate', '0');
         $is_pro = $this->is_pro_user();
@@ -233,22 +222,7 @@ class Audio_Press_AI {
                 <table class="form-table">
                     <tr>
                         <th scope="row">
-                            <label for="audio_press_ai_api_server_url"><?php _e('API Server URL', 'audio-press-ai'); ?></label>
-                        </th>
-                        <td>
-                            <input type="text" 
-                                   id="audio_press_ai_api_server_url" 
-                                   name="audio_press_ai_api_server_url" 
-                                   value="<?php echo esc_attr($api_server_url); ?>" 
-                                   class="regular-text" />
-                            <p class="description">
-                                <?php _e('Your remote API server URL. All API keys are managed on the server - no need to configure them here.', 'audio-press-ai'); ?>
-                            </p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row">
-                            <label for="audio_press_ai_voice"><?php _e('Voice Model', 'audio-press-ai'); ?></label>
+                            <label for="audio_press_ai_voice"><?php _e('Default Voice', 'audio-press-ai'); ?></label>
                         </th>
                         <td>
                             <select id="audio_press_ai_voice" name="audio_press_ai_voice">
@@ -260,22 +234,68 @@ class Audio_Press_AI {
                                 <option value="shimmer" <?php selected($voice, 'shimmer'); ?>>Shimmer</option>
                             </select>
                             <p class="description">
-                                <?php _e('Choose the voice for audio generation.', 'audio-press-ai'); ?>
+                                <?php _e('Default voice for audio generation. You can test different voices and languages using the Test feature below.', 'audio-press-ai'); ?>
                             </p>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row">
-                            <label for="audio_press_ai_model"><?php _e('Quality', 'audio-press-ai'); ?></label>
-                        </th>
+                        <th scope="row"><?php _e('Test Voices & Languages', 'audio-press-ai'); ?></th>
                         <td>
-                            <select id="audio_press_ai_model" name="audio_press_ai_model">
-                                <option value="tts-1" <?php selected($model, 'tts-1'); ?>>tts-1 (Fast & Affordable)</option>
-                                <option value="tts-1-hd" <?php selected($model, 'tts-1-hd'); ?>>tts-1-hd (High Quality)</option>
-                            </select>
-                            <p class="description">
-                                <?php _e('tts-1 is faster and cheaper. tts-1-hd provides higher quality audio.', 'audio-press-ai'); ?>
-                            </p>
+                            <div id="audio-press-ai-test-section" style="padding: 15px; background: #f0f6fc; border: 1px solid #c3c4c7; border-radius: 4px;">
+                                <p style="margin-top: 0;"><?php _e('Test different voices and languages with a sample text:', 'audio-press-ai'); ?></p>
+                                <table style="width: 100%;">
+                                    <tr>
+                                        <td style="width: 50%; padding-right: 10px;">
+                                            <label for="audio-press-ai-test-voice" style="display: block; margin-bottom: 5px; font-weight: 600;"><?php _e('Voice:', 'audio-press-ai'); ?></label>
+                                            <select id="audio-press-ai-test-voice" style="width: 100%; padding: 6px;">
+                                                <option value="alloy">Alloy</option>
+                                                <option value="echo">Echo</option>
+                                                <option value="fable">Fable</option>
+                                                <option value="onyx">Onyx</option>
+                                                <option value="nova" selected>Nova</option>
+                                                <option value="shimmer">Shimmer</option>
+                                            </select>
+                                        </td>
+                                        <td style="width: 50%; padding-left: 10px;">
+                                            <label for="audio-press-ai-test-language" style="display: block; margin-bottom: 5px; font-weight: 600;"><?php _e('Language:', 'audio-press-ai'); ?></label>
+                                            <select id="audio-press-ai-test-language" style="width: 100%; padding: 6px;">
+                                                <option value="en" selected>English</option>
+                                                <option value="es">Español (Spanish)</option>
+                                                <option value="pt_PT">Português PT (Portuguese Portugal)</option>
+                                                <option value="pt_BR">Português BR (Portuguese Brazil)</option>
+                                                <option value="de">Deutsch (German)</option>
+                                                <option value="nl_NL">Nederlands NL (Dutch Netherlands)</option>
+                                                <option value="nl_BE">Nederlands BE (Dutch Belgium)</option>
+                                                <option value="da">Dansk (Danish)</option>
+                                                <option value="sv">Svenska (Swedish)</option>
+                                                <option value="he">עברית (Hebrew)</option>
+                                                <option value="ar">ערבית (Arabic)</option>
+                                                <option value="ru">Русский (Russian)</option>
+                                                <option value="zh">中文/日本語/한국어 (CJK)</option>
+                                            </select>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td colspan="2" style="padding-top: 10px;">
+                                            <label for="audio-press-ai-test-text" style="display: block; margin-bottom: 5px; font-weight: 600;"><?php _e('Test Text:', 'audio-press-ai'); ?></label>
+                                            <textarea id="audio-press-ai-test-text" rows="3" style="width: 100%; padding: 6px;" placeholder="<?php esc_attr_e('Enter text to test...', 'audio-press-ai'); ?>"><?php esc_html_e('Hello! This is a test of the audio generation feature.', 'audio-press-ai'); ?></textarea>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td colspan="2" style="padding-top: 10px;">
+                                            <button type="button" id="audio-press-ai-test-button" class="button button-secondary" <?php if (!$is_pro && !$dev_mode) echo 'disabled'; ?>>
+                                                <?php _e('Test Audio Generation', 'audio-press-ai'); ?>
+                                            </button>
+                                            <span id="audio-press-ai-test-status" style="margin-left: 10px; display: none;"></span>
+                                        </td>
+                                    </tr>
+                                    <tr id="audio-press-ai-test-result-row" style="display: none;">
+                                        <td colspan="2" style="padding-top: 10px;">
+                                            <div id="audio-press-ai-test-player" style="margin-top: 10px;"></div>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </div>
                         </td>
                     </tr>
                     <tr>
@@ -306,6 +326,135 @@ class Audio_Press_AI {
                 <?php submit_button(); ?>
             </form>
         </div>
+        <script>
+        jQuery(document).ready(function($) {
+            $('#audio-press-ai-test-button').on('click', function() {
+                var $btn = $(this);
+                var $status = $('#audio-press-ai-test-status');
+                var $resultRow = $('#audio-press-ai-test-result-row');
+                var $player = $('#audio-press-ai-test-player');
+                
+                var voice = $('#audio-press-ai-test-voice').val();
+                var language = $('#audio-press-ai-test-language').val();
+                var text = $('#audio-press-ai-test-text').val().trim();
+                
+                if (!text) {
+                    alert('<?php esc_js_e('Please enter test text', 'audio-press-ai'); ?>');
+                    return;
+                }
+                
+                $btn.prop('disabled', true);
+                $status.html('<span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span><?php esc_js_e('Generating...', 'audio-press-ai'); ?>').show();
+                $resultRow.hide();
+                $player.empty();
+                
+                $.ajax({
+                    url: '<?php echo esc_js(admin_url('admin-ajax.php')); ?>',
+                    type: 'POST',
+                    data: {
+                        action: 'audio_press_ai_test_generate',
+                        voice: voice,
+                        language: language,
+                        text: text,
+                        nonce: '<?php echo wp_create_nonce('audio_press_ai_test'); ?>'
+                    },
+                    success: function(response) {
+                        $btn.prop('disabled', false);
+                        if (response.success) {
+                            $status.html('<span style="color: #00a32a;">✅ <?php esc_js_e('Success!', 'audio-press-ai'); ?></span>');
+                            var audioUrl = response.data.audio_url;
+                            var playerHtml = '<div class="audio-press-ai-custom-player">';
+                            playerHtml += '<div class="player-controls">';
+                            playerHtml += '<button class="play-pause-btn paused test-play-pause" type="button"></button>';
+                            playerHtml += '<div class="player-info">';
+                            playerHtml += '<div class="progress-container">';
+                            playerHtml += '<div class="progress-bar-wrapper test-progress-wrapper">';
+                            playerHtml += '<div class="progress-bar test-progress"></div>';
+                            playerHtml += '</div>';
+                            playerHtml += '</div>';
+                            playerHtml += '<div class="time-display">';
+                            playerHtml += '<span class="time-current test-time-current">0:00</span>';
+                            playerHtml += '<span class="time-separator">/</span>';
+                            playerHtml += '<span class="time-total test-time-total">0:00</span>';
+                            playerHtml += '</div>';
+                            playerHtml += '</div>';
+                            playerHtml += '</div>';
+                            playerHtml += '<audio class="test-audio-element" preload="metadata">';
+                            playerHtml += '<source src="' + audioUrl + '" type="audio/wav">';
+                            playerHtml += '<source src="' + audioUrl + '" type="audio/mpeg">';
+                            playerHtml += '</audio>';
+                            playerHtml += '</div>';
+                            $player.html(playerHtml);
+                            $resultRow.show();
+                            
+                            // Initialize player
+                            var audio = $('.test-audio-element')[0];
+                            var playPauseBtn = $('.test-play-pause');
+                            var progressBar = $('.test-progress');
+                            var progressWrapper = $('.test-progress-wrapper');
+                            var timeCurrent = $('.test-time-current');
+                            var timeTotal = $('.test-time-total');
+                            
+                            function formatTime(seconds) {
+                                if (isNaN(seconds) || !isFinite(seconds)) return '0:00';
+                                var mins = Math.floor(seconds / 60);
+                                var secs = Math.floor(seconds % 60);
+                                return mins + ':' + (secs < 10 ? '0' : '') + secs;
+                            }
+                            
+                            function updateTime() {
+                                if (audio.duration) timeTotal.text(formatTime(audio.duration));
+                                timeCurrent.text(formatTime(audio.currentTime));
+                                if (audio.duration) {
+                                    var percent = (audio.currentTime / audio.duration) * 100;
+                                    progressBar.css('width', percent + '%');
+                                }
+                            }
+                            
+                            audio.addEventListener('loadedmetadata', function() {
+                                timeTotal.text(formatTime(audio.duration));
+                            });
+                            audio.addEventListener('timeupdate', updateTime);
+                            audio.addEventListener('loadeddata', updateTime);
+                            
+                            playPauseBtn.on('click', function() {
+                                if (audio.paused) {
+                                    audio.play();
+                                    playPauseBtn.removeClass('paused').addClass('playing');
+                                } else {
+                                    audio.pause();
+                                    playPauseBtn.removeClass('playing').addClass('paused');
+                                }
+                            });
+                            
+                            audio.addEventListener('play', function() {
+                                playPauseBtn.removeClass('paused').addClass('playing');
+                            });
+                            audio.addEventListener('pause', function() {
+                                playPauseBtn.removeClass('playing').addClass('paused');
+                            });
+                            
+                            progressWrapper.on('click', function(e) {
+                                if (!audio.duration) return;
+                                var rect = this.getBoundingClientRect();
+                                var x = e.clientX - rect.left;
+                                var percent = Math.max(0, Math.min(1, x / rect.width));
+                                audio.currentTime = percent * audio.duration;
+                            });
+                            
+                            audio.load();
+                        } else {
+                            $status.html('<span style="color: #d63638;">❌ ' + (response.data && response.data.message ? response.data.message : '<?php esc_js_e('Error', 'audio-press-ai'); ?>') + '</span>');
+                        }
+                    },
+                    error: function() {
+                        $btn.prop('disabled', false);
+                        $status.html('<span style="color: #d63638;">❌ <?php esc_js_e('Network error', 'audio-press-ai'); ?></span>');
+                    }
+                });
+            });
+        });
+        </script>
         <?php
     }
     
@@ -386,6 +535,8 @@ class Audio_Press_AI {
                     'de' => 'Deutsch (German)',
                     'nl_NL' => 'Nederlands NL (Dutch Netherlands)',
                     'nl_BE' => 'Nederlands BE (Dutch Belgium)',
+                    'da' => 'Dansk (Danish)',
+                    'sv' => 'Svenska (Swedish)',
                     'he' => 'עברית (Hebrew)',
                     'ar' => 'ערבית (Arabic)',
                     'ru' => 'Русский (Russian)',
@@ -538,13 +689,9 @@ class Audio_Press_AI {
             $voice = 'nova'; // Default fallback
         }
         
-        $model = get_option('audio_press_ai_model', 'tts-1-hd');
-        $allowed_models = array('tts-1', 'tts-1-hd');
-        if (!in_array($model, $allowed_models, true)) {
-            $model = 'tts-1-hd'; // Default fallback
-        }
-        
-        $api_server_url = get_option('audio_press_ai_api_server_url', AUDIO_PRESS_AI_API_URL);
+        // Model/Quality is not used by server (Piper TTS is language-based)
+        // API Server URL is constant
+        $api_server_url = AUDIO_PRESS_AI_API_URL;
         // Validate URL
         $api_server_url = esc_url_raw($api_server_url);
         if (empty($api_server_url) || !filter_var($api_server_url, FILTER_VALIDATE_URL)) {
@@ -650,7 +797,8 @@ class Audio_Press_AI {
         $language = isset($_POST['language']) ? sanitize_text_field($_POST['language']) : null;
         
         // Call remote API server
-        $response = $this->call_remote_api($api_server_url, $license_key, $wp_user_id, $model, $voice, $content, $language, $post_id);
+        // Note: $model parameter is kept for backward compatibility but not used by server (Piper TTS is language-based)
+        $response = $this->call_remote_api($api_server_url, $license_key, $wp_user_id, 'tts-1-hd', $voice, $content, $language, $post_id);
         
         if (is_wp_error($response)) {
             wp_send_json_error(array('message' => $response->get_error_message()));
@@ -964,7 +1112,7 @@ class Audio_Press_AI {
             wp_send_json_error(array('message' => __('Post content is empty after processing', 'audio-press-ai')));
         }
         
-        $api_server_url = get_option('audio_press_ai_api_server_url', AUDIO_PRESS_AI_API_URL);
+        $api_server_url = AUDIO_PRESS_AI_API_URL;
         $api_server_url = esc_url_raw(rtrim($api_server_url, '/'));
         
         if (empty($api_server_url) || !filter_var($api_server_url, FILTER_VALIDATE_URL)) {
@@ -997,6 +1145,200 @@ class Audio_Press_AI {
         }
         
         wp_send_json_success($response_data);
+    }
+    
+    /**
+     * AJAX handler for test audio generation (from settings page)
+     */
+    public function ajax_test_generate() {
+        // Verify nonce
+        check_ajax_referer('audio_press_ai_test', 'nonce');
+        
+        // Check user capabilities
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(array('message' => __('Insufficient permissions', 'audio-press-ai')));
+        }
+        
+        // Check Pro license (unless in dev mode)
+        if (!(defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true)) {
+            if (!$this->is_pro_user()) {
+                wp_send_json_error(array('message' => __('Pro license required. Please upgrade.', 'audio-press-ai')));
+            }
+        }
+        
+        $license_key = $this->get_license_key();
+        if (!$license_key) {
+            // In dev mode, use TEST key if get_license_key fails
+            if (defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true) {
+                $license_key = 'TEST';
+            } else {
+                wp_send_json_error(array('message' => __('License key not found', 'audio-press-ai')));
+            }
+        }
+        
+        // Get and validate test parameters
+        $voice = isset($_POST['voice']) ? sanitize_text_field($_POST['voice']) : 'nova';
+        $allowed_voices = array('alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer');
+        if (!in_array($voice, $allowed_voices, true)) {
+            $voice = 'nova'; // Default fallback
+        }
+        
+        $language = isset($_POST['language']) ? sanitize_text_field($_POST['language']) : null;
+        
+        // Get text - use wp_unslash and strip_tags to preserve special characters needed for TTS
+        $text = isset($_POST['text']) ? wp_unslash($_POST['text']) : '';
+        // Strip HTML tags but preserve text content
+        $text = wp_strip_all_tags($text);
+        // Trim whitespace
+        $text = trim($text);
+        
+        if (empty($text)) {
+            wp_send_json_error(array('message' => __('Test text is required', 'audio-press-ai')));
+        }
+        
+        // Limit test text length (max 500 characters for testing)
+        if (strlen($text) > 500) {
+            $text = substr($text, 0, 500);
+        }
+        
+        // API Server URL is constant
+        $api_server_url = AUDIO_PRESS_AI_API_URL;
+        $api_server_url = esc_url_raw($api_server_url);
+        if (empty($api_server_url) || !filter_var($api_server_url, FILTER_VALIDATE_URL)) {
+            wp_send_json_error(array('message' => __('Invalid API server URL', 'audio-press-ai')));
+        }
+        
+        // Use a dummy post ID for testing (0 or -1)
+        $test_post_id = -1;
+        
+        // Call remote API server
+        $response = $this->call_remote_api($api_server_url, $license_key, get_current_user_id(), 'tts-1-hd', $voice, $text, $language, $test_post_id);
+        
+        if (is_wp_error($response)) {
+            wp_send_json_error(array('message' => $response->get_error_message()));
+        }
+        
+        $response_body = wp_remote_retrieve_body($response);
+        if (empty($response_body)) {
+            wp_send_json_error(array('message' => __('Empty response from server', 'audio-press-ai')));
+        }
+        
+        $response_data = json_decode($response_body, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            wp_send_json_error(array('message' => __('Invalid JSON response from server', 'audio-press-ai')));
+        }
+        
+        if (isset($response_data['error'])) {
+            $error_message = is_string($response_data['error']) ? sanitize_text_field($response_data['error']) : __('Unknown error', 'audio-press-ai');
+            wp_send_json_error(array('message' => $error_message));
+        }
+        
+        // Check if server sent audio data directly (new method) or URL (old method)
+        if (isset($response_data['audio_data'])) {
+            // New method: Audio sent as base64 in response
+            $audio_base64 = $response_data['audio_data'];
+            
+            // Decode base64 to binary
+            $file_contents = base64_decode($audio_base64, true);
+            if ($file_contents === false) {
+                wp_send_json_error(array('message' => __('Failed to decode audio data', 'audio-press-ai')));
+            }
+            
+            // Limit file size (max 25MB)
+            if (strlen($file_contents) > 26214400) {
+                wp_send_json_error(array('message' => __('Audio file is too large', 'audio-press-ai')));
+            }
+            
+            // Generate filename for test
+            $filename = 'test-audio-' . time() . '.mp3';
+            
+        } elseif (isset($response_data['audio_url'])) {
+            // Old method: Download from URL (backwards compatibility)
+            $audio_url = esc_url_raw($response_data['audio_url']);
+            if (empty($audio_url) || !filter_var($audio_url, FILTER_VALIDATE_URL)) {
+                wp_send_json_error(array('message' => __('Invalid audio URL from server', 'audio-press-ai')));
+            }
+            
+            // Download audio file from remote server
+            $audio_file = download_url($audio_url);
+            
+            if (is_wp_error($audio_file)) {
+                wp_send_json_error(array('message' => __('Failed to download audio file', 'audio-press-ai') . ': ' . $audio_file->get_error_message()));
+            }
+            
+            // Verify file exists and is readable
+            if (!file_exists($audio_file) || !is_readable($audio_file)) {
+                wp_send_json_error(array('message' => __('Downloaded file is not accessible', 'audio-press-ai')));
+            }
+            
+            // Read file with error handling
+            $file_contents = @file_get_contents($audio_file);
+            if ($file_contents === false) {
+                @unlink($audio_file); // Clean up on error
+                wp_send_json_error(array('message' => __('Failed to read downloaded file', 'audio-press-ai')));
+            }
+            
+            // Limit file size (max 25MB)
+            if (strlen($file_contents) > 26214400) {
+                @unlink($audio_file);
+                wp_send_json_error(array('message' => __('Audio file is too large', 'audio-press-ai')));
+            }
+            
+            @unlink($audio_file); // Clean up temp file
+            
+            // Generate filename for test
+            $filename = 'test-audio-' . time() . '.mp3';
+            
+        } else {
+            wp_send_json_error(array('message' => __('Invalid response from server: missing audio data or URL', 'audio-press-ai')));
+        }
+        
+        // Save to WordPress media library (temporary - will be cleaned up)
+        $upload = wp_upload_bits($filename, null, $file_contents);
+        
+        if ($upload['error']) {
+            wp_send_json_error(array('message' => __('Failed to save audio file', 'audio-press-ai')));
+        }
+        
+        // Get mime type
+        $wp_file_type = wp_check_filetype($filename, null);
+        $mime_type = $wp_file_type['type'];
+        
+        // Fallback to server's mime type if WordPress couldn't detect it
+        if (!$mime_type && isset($response_data['audio_mime'])) {
+            $mime_type = sanitize_text_field($response_data['audio_mime']);
+        }
+        
+        // Final fallback
+        if (!$mime_type) {
+            $mime_type = 'audio/wav';
+        }
+        
+        // Create attachment (without post parent - it's a test file)
+        $attachment = array(
+            'post_mime_type' => $mime_type,
+            'post_title' => sanitize_text_field('Test Audio - ' . date('Y-m-d H:i:s')),
+            'post_content' => '',
+            'post_status' => 'inherit',
+            'post_author' => get_current_user_id()
+        );
+        
+        $attachment_id = wp_insert_attachment($attachment, $upload['file'], 0);
+        
+        if (is_wp_error($attachment_id)) {
+            wp_send_json_error(array('message' => __('Failed to create attachment', 'audio-press-ai')));
+        }
+        
+        require_once(ABSPATH . 'wp-admin/includes/image.php');
+        
+        $attach_data = wp_generate_attachment_metadata($attachment_id, $upload['file']);
+        wp_update_attachment_metadata($attachment_id, $attach_data);
+        
+        // Return audio URL (the file will be cleaned up later by WordPress cleanup routines)
+        wp_send_json_success(array(
+            'audio_url' => wp_get_attachment_url($attachment_id),
+            'message' => __('Test audio generated successfully!', 'audio-press-ai')
+        ));
     }
     
     /**

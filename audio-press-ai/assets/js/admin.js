@@ -653,6 +653,8 @@ jQuery(document).ready(function($) {
                         'de': 'Deutsch (German)',
                         'nl_NL': 'Nederlands NL (Dutch Netherlands)',
                         'nl_BE': 'Nederlands BE (Dutch Belgium)',
+                        'da': 'Dansk (Danish)',
+                        'sv': 'Svenska (Swedish)',
                         'he': 'עברית (Hebrew)',
                         'ar': 'ערבית (Arabic)',
                         'ru': 'Русский (Russian)',

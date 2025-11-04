@@ -167,14 +167,10 @@ add_action('plugins_loaded', 'audio_press_ai_init');
 register_activation_hook(__FILE__, 'audio_press_ai_activate');
 function audio_press_ai_activate() {
     // Set default options
-    if (get_option('audio_press_ai_api_server_url') === false) {
-        add_option('audio_press_ai_api_server_url', AUDIO_PRESS_AI_API_URL);
-    }
+    // Note: API Server URL is now a constant (AUDIO_PRESS_AI_API_URL) - no longer stored in options
+    // Note: Model/Quality option removed - not used by server (Piper TTS is language-based)
     if (get_option('audio_press_ai_voice') === false) {
         add_option('audio_press_ai_voice', 'nova');
-    }
-    if (get_option('audio_press_ai_model') === false) {
-        add_option('audio_press_ai_model', 'tts-1-hd');
     }
     if (get_option('audio_press_ai_auto_embed') === false) {
         add_option('audio_press_ai_auto_embed', '1');
