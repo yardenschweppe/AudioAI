@@ -1531,9 +1531,11 @@ app.post('/generate', async (req, res) => {
             return res.status(400).json({ error: 'Text is empty after trimming' });
         }
         
-        // Log text for debugging
+        // Log text for debugging - with character codes to detect encoding issues
         const textPreview = trimmedText.substring(0, 100);
         console.log(`📝 Received text: length=${trimmedText.length}, preview="${textPreview}${trimmedText.length > 100 ? '...' : ''}"`);
+        console.log(`📝 Text bytes: ${Buffer.from(trimmedText).length}, chars: ${trimmedText.length}, encoding: utf8`);
+        console.log(`📝 First 10 char codes: ${trimmedText.substring(0, 10).split('').map(c => c.charCodeAt(0)).join(', ')}`);
         
         // Log full text for debugging (only first and last 50 chars to avoid huge logs)
         if (trimmedText.length > 100) {

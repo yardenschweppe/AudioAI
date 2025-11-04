@@ -551,21 +551,45 @@ class Audio_Press_AI {
             wp_send_json_error(array('message' => __('Invalid API server URL', 'audio-press-ai')));
         }
         
-        // Get post content
-        $content = get_post_field('post_content', $post_id);
+        // Get post content - use get_the_content() for better Gutenberg support
+        $post = get_post($post_id);
+        if (!$post) {
+            wp_send_json_error(array('message' => __('Post not found', 'audio-press-ai')));
+        }
+        
+        // Setup post data for proper content rendering
+        setup_postdata($post);
+        
+        // Get content - this will parse Gutenberg blocks properly
+        $content = get_the_content(null, false, $post);
+        
+        // Reset post data
+        wp_reset_postdata();
+        
+        // Debug: log raw content
+        error_log('Audio-Press AI [DEBUG]: Raw content length: ' . strlen($content) . ' chars');
+        error_log('Audio-Press AI [DEBUG]: Raw content preview: ' . substr($content, 0, 200));
         
         if (empty($content)) {
             wp_send_json_error(array('message' => __('Post content is empty', 'audio-press-ai')));
         }
         
-        // Clean content: remove HTML, shortcodes, etc.
+        // Apply the_content filters to render blocks and shortcodes
+        $content = apply_filters('the_content', $content);
+        
+        // Now strip all HTML tags
         $content = wp_strip_all_tags($content);
-        $content = do_shortcode($content);
-        $content = wp_strip_all_tags($content);
+        
+        error_log('Audio-Press AI [DEBUG]: After strip_tags length: ' . strlen($content) . ' chars');
+        error_log('Audio-Press AI [DEBUG]: After strip_tags preview: ' . substr($content, 0, 200));
+        
         // Normalize whitespace but keep line breaks for better TTS
         $content = preg_replace('/[ \t]+/', ' ', $content); // Replace multiple spaces/tabs with single space
         $content = preg_replace('/\n\s*\n/', "\n\n", $content); // Normalize multiple newlines
         $content = trim($content);
+        
+        error_log('Audio-Press AI [DEBUG]: After normalization length: ' . strlen($content) . ' chars');
+        error_log('Audio-Press AI [DEBUG]: After normalization: ' . substr($content, 0, 200));
         
         // Limit content length to prevent abuse (max 50,000 characters)
         if (strlen($content) > 50000) {
@@ -577,10 +601,9 @@ class Audio_Press_AI {
             wp_send_json_error(array('message' => __('Post content is empty after processing', 'audio-press-ai')));
         }
         
-        // Debug: log content length (only in dev mode)
-        if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log('Audio-Press AI: Content length: ' . strlen($content) . ' chars, preview: ' . substr($content, 0, 100));
-        }
+        // Debug: log final content that will be sent to server
+        error_log('Audio-Press AI [DEBUG]: Final content to send: length=' . strlen($content) . ' chars');
+        error_log('Audio-Press AI [DEBUG]: Final content preview: ' . substr($content, 0, 200));
         
         // Delete old audio if exists (regeneration)
         $old_audio_id = absint(get_post_meta($post_id, '_audio_press_mp3_id', true));
