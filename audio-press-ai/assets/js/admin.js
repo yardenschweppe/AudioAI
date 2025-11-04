@@ -216,9 +216,16 @@ jQuery(document).ready(function($) {
         // Update time display
         function updateTime() {
             if (audio.duration) {
-                timeTotal.text(formatTime(audio.duration));
+                // Calculate actual playback time based on speed
+                var playbackRate = audio.playbackRate || 1;
+                var actualDuration = audio.duration / playbackRate;
+                var actualCurrentTime = audio.currentTime / playbackRate;
+                
+                timeTotal.text(formatTime(actualDuration));
+                timeCurrent.text(formatTime(actualCurrentTime));
+            } else {
+                timeCurrent.text(formatTime(audio.currentTime));
             }
-            timeCurrent.text(formatTime(audio.currentTime));
             
             if (audio.duration) {
                 var percent = (audio.currentTime / audio.duration) * 100;
@@ -228,7 +235,9 @@ jQuery(document).ready(function($) {
         
         // Set total time when metadata loaded
         audio.addEventListener('loadedmetadata', function() {
-            timeTotal.text(formatTime(audio.duration));
+            var playbackRate = audio.playbackRate || 1;
+            var actualDuration = audio.duration / playbackRate;
+            timeTotal.text(formatTime(actualDuration));
         });
         
         // Update progress while playing
@@ -276,6 +285,8 @@ jQuery(document).ready(function($) {
                 if (!isNaN(speed) && speed > 0) {
                     audio.playbackRate = speed;
                     console.log('Audio speed changed to:', speed + 'x');
+                    // Update time display immediately when speed changes
+                    updateTime();
                 }
             });
             // Set initial speed to 1x if not already set
@@ -289,7 +300,8 @@ jQuery(document).ready(function($) {
     }
     
     // Initialize existing player (for players that exist on page load)
-    function initExistingPlayer() {
+    // Expose globally so PHP inline scripts can call it
+    window.initExistingPlayer = function() {
         var audio = $('#audio-press-ai-audio-element')[0];
         if (!audio) return;
         
@@ -304,9 +316,16 @@ jQuery(document).ready(function($) {
         // Update time display
         function updateTime() {
             if (audio.duration) {
-                timeTotal.text(formatTime(audio.duration));
+                // Calculate actual playback time based on speed
+                var playbackRate = audio.playbackRate || 1;
+                var actualDuration = audio.duration / playbackRate;
+                var actualCurrentTime = audio.currentTime / playbackRate;
+                
+                timeTotal.text(formatTime(actualDuration));
+                timeCurrent.text(formatTime(actualCurrentTime));
+            } else {
+                timeCurrent.text(formatTime(audio.currentTime));
             }
-            timeCurrent.text(formatTime(audio.currentTime));
             
             if (audio.duration) {
                 var percent = (audio.currentTime / audio.duration) * 100;
@@ -316,7 +335,9 @@ jQuery(document).ready(function($) {
         
         // Set total time when metadata loaded
         audio.addEventListener('loadedmetadata', function() {
-            timeTotal.text(formatTime(audio.duration));
+            var playbackRate = audio.playbackRate || 1;
+            var actualDuration = audio.duration / playbackRate;
+            timeTotal.text(formatTime(actualDuration));
         });
         
         // Update progress while playing
@@ -364,6 +385,8 @@ jQuery(document).ready(function($) {
                 if (!isNaN(speed) && speed > 0) {
                     audio.playbackRate = speed;
                     console.log('Audio speed changed to:', speed + 'x');
+                    // Update time display immediately when speed changes
+                    updateTime();
                 }
             });
             // Set initial speed to 1x if not already set
@@ -374,7 +397,7 @@ jQuery(document).ready(function($) {
         
         // Load audio metadata
         audio.load();
-    }
+    };
     
     // Helper function to create language selector HTML
     function createLanguageSelectorHTML(response) {
@@ -597,6 +620,7 @@ jQuery(document).ready(function($) {
             selectedLanguage = $('#audio-press-ai-language-select').val();
             // Remove language selector before generating
             $('#audio-press-ai-language-selector').remove();
+            // If player wrapper was hidden, it will be replaced by generateAudio, so no need to show it
             generateAudio();
         });
         
@@ -605,6 +629,11 @@ jQuery(document).ready(function($) {
             $('#audio-press-ai-language-selector').remove();
             // Restore buttons if in regenerate mode
             if (isRegenerate) {
+                // Show the player wrapper again if it was hidden
+                var $playerWrapper = $('#audio-press-ai-player-wrapper');
+                if ($playerWrapper.length) {
+                    $playerWrapper.show();
+                }
                 restoreButton($('#audio-press-ai-regenerate'));
                 restoreButton(regenerateBtn);
             } else {
@@ -722,6 +751,7 @@ jQuery(document).ready(function($) {
                     html += '</div>';
                     html += '</div>';
                     
+                    // Replace container content (this will remove old player if exists)
                     container.html(html);
                     
                     // Initialize custom player
@@ -734,6 +764,11 @@ jQuery(document).ready(function($) {
                         
                         // Show immediate visual feedback
                         setButtonLoading($btn, 'Preparing...');
+                        
+                        // Hide the player wrapper and buttons while showing language selector
+                        if ($playerWrapper.length) {
+                            $playerWrapper.hide();
+                        }
                         
                         selectedLanguage = null; // Reset for regeneration
                         
@@ -956,6 +991,11 @@ jQuery(document).ready(function($) {
             // Show immediate visual feedback
             setButtonLoading($btn, 'Preparing...');
             
+            // Hide the player wrapper and buttons while showing language selector
+            if ($playerWrapper.length) {
+                $playerWrapper.hide();
+            }
+            
             selectedLanguage = null; // Reset for regeneration
             
             // Show language selector above the player (for regenerate flow)
@@ -968,5 +1008,48 @@ jQuery(document).ready(function($) {
     }
     if (deleteBtn.length) {
         deleteBtn.on('click', deleteAudio);
+    }
+    
+    // Initialize existing player if it exists on page load (after saving post)
+    var existingPlayer = $('#audio-press-ai-player-wrapper');
+    if (existingPlayer.length) {
+        // Check if audio element exists
+        var existingAudio = $('#audio-press-ai-audio-element')[0];
+        if (existingAudio) {
+            // Initialize the player
+            initExistingPlayer();
+            
+            // Re-bind regenerate button if it exists
+            var $regenerateBtn = $('#audio-press-ai-regenerate');
+            if ($regenerateBtn.length) {
+                $regenerateBtn.off('click').on('click', function() {
+                    var $btn = $(this);
+                    var $playerWrapper = $('#audio-press-ai-player-wrapper');
+                    
+                    // Show immediate visual feedback
+                    setButtonLoading($btn, 'Preparing...');
+                    
+                    // Hide the player wrapper and buttons while showing language selector
+                    if ($playerWrapper.length) {
+                        $playerWrapper.hide();
+                    }
+                    
+                    selectedLanguage = null; // Reset for regeneration
+                    
+                    // Show language selector above the player (for regenerate flow)
+                    detectLanguageAndShowSelectorForRegenerate(function() {
+                        // This callback is called after language selector is shown
+                        // The actual generation happens when user clicks "Generate Audio" in the selector
+                        restoreButton($btn); // Re-enable regenerate button in case user cancels
+                    }, $playerWrapper);
+                });
+            }
+            
+            // Re-bind delete button if it exists
+            var $deleteBtn = $('#audio-press-ai-delete');
+            if ($deleteBtn.length) {
+                $deleteBtn.off('click').on('click', deleteAudio);
+            }
+        }
     }
 });

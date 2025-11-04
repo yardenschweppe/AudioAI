@@ -562,8 +562,15 @@ class Audio_Press_AI {
                             }
                             
                             function updateTime() {
-                                if (audio.duration) timeTotal.text(formatTime(audio.duration));
-                                timeCurrent.text(formatTime(audio.currentTime));
+                                if (audio.duration) {
+                                    var playbackRate = audio.playbackRate || 1;
+                                    var actualDuration = audio.duration / playbackRate;
+                                    var actualCurrentTime = audio.currentTime / playbackRate;
+                                    timeTotal.text(formatTime(actualDuration));
+                                    timeCurrent.text(formatTime(actualCurrentTime));
+                                } else {
+                                    timeCurrent.text(formatTime(audio.currentTime));
+                                }
                                 if (audio.duration) {
                                     var percent = (audio.currentTime / audio.duration) * 100;
                                     progressBar.css('width', percent + '%');
@@ -571,7 +578,9 @@ class Audio_Press_AI {
                             }
                             
                             audio.addEventListener('loadedmetadata', function() {
-                                timeTotal.text(formatTime(audio.duration));
+                                var playbackRate = audio.playbackRate || 1;
+                                var actualDuration = audio.duration / playbackRate;
+                                timeTotal.text(formatTime(actualDuration));
                             });
                             audio.addEventListener('timeupdate', updateTime);
                             audio.addEventListener('loadeddata', updateTime);
@@ -809,19 +818,38 @@ class Audio_Press_AI {
                     // Add speed control functionality
                     var speedSelect = jQuery('#audio-press-ai-speed-select');
                     if (speedSelect.length) {
-                        speedSelect.off('change').on('change', function() {
-                            var audio = jQuery('#audio-press-ai-audio-element')[0];
-                            if (audio) {
+                        // Get audio element reference
+                        var audio = jQuery('#audio-press-ai-audio-element')[0];
+                        if (audio) {
+                            // Define formatTime function if not already defined
+                            function formatTime(seconds) {
+                                if (isNaN(seconds) || !isFinite(seconds)) return '0:00';
+                                var mins = Math.floor(seconds / 60);
+                                var secs = Math.floor(seconds % 60);
+                                return mins + ':' + (secs < 10 ? '0' : '') + secs;
+                            }
+                            
+                            // Define updateTime function for speed changes
+                            function updateTimeForSpeed() {
+                                if (audio.duration) {
+                                    var playbackRate = audio.playbackRate || 1;
+                                    var actualDuration = audio.duration / playbackRate;
+                                    var actualCurrentTime = audio.currentTime / playbackRate;
+                                    jQuery('#audio-press-ai-time-total').text(formatTime(actualDuration));
+                                    jQuery('#audio-press-ai-time-current').text(formatTime(actualCurrentTime));
+                                }
+                            }
+                            
+                            speedSelect.off('change').on('change', function() {
                                 var speed = parseFloat(jQuery(this).val());
                                 if (!isNaN(speed) && speed > 0) {
                                     audio.playbackRate = speed;
                                     console.log('Audio speed changed to:', speed + 'x');
+                                    // Update time display immediately when speed changes
+                                    updateTimeForSpeed();
                                 }
-                            }
-                        });
-                        // Set initial speed to 1x
-                        var audio = jQuery('#audio-press-ai-audio-element')[0];
-                        if (audio) {
+                            });
+                            // Set initial speed to 1x
                             audio.playbackRate = 1;
                         }
                     }
@@ -1828,14 +1856,27 @@ class Audio_Press_AI {
         }
         
         $post_id = get_the_ID();
+        
+        // Double-check post ID is valid
+        if (!$post_id || $post_id <= 0) {
+            return $content;
+        }
+        
         $audio_id = get_post_meta($post_id, '_audio_press_mp3_id', true);
         
-        if (!$audio_id) {
+        // Check if audio_id exists and is valid
+        if (!$audio_id || $audio_id <= 0) {
             return $content;
         }
         
         $audio_url = wp_get_attachment_url($audio_id);
         if (!$audio_url) {
+            return $content;
+        }
+        
+        // Verify attachment exists
+        $attachment = get_post($audio_id);
+        if (!$attachment || $attachment->post_type !== 'attachment') {
             return $content;
         }
         
@@ -1896,8 +1937,15 @@ class Audio_Press_AI {
         $player_html .= '}';
         
         $player_html .= 'function updateTime() {';
-        $player_html .= 'if (audio.duration) timeTotal.textContent = formatTime(audio.duration);';
+        $player_html .= 'if (audio.duration) {';
+        $player_html .= 'var playbackRate = audio.playbackRate || 1;';
+        $player_html .= 'var actualDuration = audio.duration / playbackRate;';
+        $player_html .= 'var actualCurrentTime = audio.currentTime / playbackRate;';
+        $player_html .= 'timeTotal.textContent = formatTime(actualDuration);';
+        $player_html .= 'timeCurrent.textContent = formatTime(actualCurrentTime);';
+        $player_html .= '} else {';
         $player_html .= 'timeCurrent.textContent = formatTime(audio.currentTime);';
+        $player_html .= '}';
         $player_html .= 'if (audio.duration) {';
         $player_html .= 'var percent = (audio.currentTime / audio.duration) * 100;';
         $player_html .= 'progressBar.style.width = percent + "%";';
@@ -1905,7 +1953,9 @@ class Audio_Press_AI {
         $player_html .= '}';
         
         $player_html .= 'audio.addEventListener("loadedmetadata", function() {';
-        $player_html .= 'timeTotal.textContent = formatTime(audio.duration);';
+        $player_html .= 'var playbackRate = audio.playbackRate || 1;';
+        $player_html .= 'var actualDuration = audio.duration / playbackRate;';
+        $player_html .= 'timeTotal.textContent = formatTime(actualDuration);';
         $player_html .= '});';
         
         $player_html .= 'audio.addEventListener("timeupdate", updateTime);';
@@ -1948,6 +1998,8 @@ class Audio_Press_AI {
         $player_html .= 'if (!isNaN(speed) && speed > 0) {';
         $player_html .= 'audio.playbackRate = speed;';
         $player_html .= 'console.log("Audio speed changed to:", speed + "x");';
+        $player_html .= '// Update time display immediately when speed changes';
+        $player_html .= 'updateTime();';
         $player_html .= '}';
         $player_html .= '});';
         $player_html .= '// Set initial speed to 1x';
@@ -1958,7 +2010,8 @@ class Audio_Press_AI {
         $player_html .= '})();';
         $player_html .= '</script>';
         
-        return $player_html . $content;
+        // Add player at the end of content (after the post content)
+        return $content . $player_html;
     }
     
     /**
