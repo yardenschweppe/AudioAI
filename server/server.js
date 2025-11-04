@@ -1778,9 +1778,10 @@ app.post('/generate', async (req, res) => {
         async function continueRequest() {
         
         // Step 2: Validate license with Freemius (או מצב בדיקה)
-        // Always validate with Freemius to ensure plan_code is up-to-date
+        // Check if this is a new WordPress user (not registered with Freemius)
+        const isNewWordPressUser = license_key.startsWith('WP_');
         const isTestKey = license_key === 'TEST' || license_key === TEST_LICENSE_KEY;
-        const shouldSkipValidation = TEST_MODE || isTestKey;
+        const shouldSkipValidation = TEST_MODE || isTestKey || isNewWordPressUser;
         
         let validation;
         let licRow = null;
@@ -1788,16 +1789,55 @@ app.post('/generate', async (req, res) => {
         if (shouldSkipValidation) {
             if (TEST_MODE) {
                 console.log('⚠️  TEST MODE: Skipping Freemius validation (Freemius is disabled)');
-            } else {
+            } else if (isTestKey) {
                 console.log('⚠️  TEST KEY detected: Skipping Freemius validation');
+            } else if (isNewWordPressUser) {
+                console.log(`✅ New WordPress user detected (${license_key.substring(0, 8)}...): Skipping Freemius validation - user not yet registered`);
             }
+            
             validation = {
                 valid: true,
-                license: { is_active: true, test_mode: true }
+                license: { is_active: true, test_mode: isTestKey || TEST_MODE }
             };
-            // If DB is configured, still get/create test license in DB
+            
+            // If DB is configured, get/create license in DB
             if (dbPool) {
-                licRow = await getOrValidateLicense(license_key);
+                if (isNewWordPressUser) {
+                    // For new WordPress users, get from DB (should have been added in previous step)
+                    // If not found, try to add it (shouldn't happen, but just in case)
+                    const [rows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
+                    licRow = rows[0];
+                    if (!licRow) {
+                        // User not found - add them now (shouldn't happen but handle gracefully)
+                        console.log(`⚠️  New WordPress user not found in DB - adding now: ${license_key.substring(0, 8)}...`);
+                        await dbPool.query(
+                            `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, trial_post_id, validated_at) VALUES (?, ?, ?, ?, ?, NOW())`,
+                            [license_key, 'trial', 'trialing', 'monthly', String(effectivePostId || '')]
+                        );
+                        const [newRows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
+                        licRow = newRows[0];
+                    }
+                    
+                    if (licRow) {
+                        console.log(`✅ Found new WordPress user in DB: ${license_key.substring(0, 8)}...`);
+                        validation = {
+                            valid: true,
+                            license: {
+                                is_active: licRow.status === 'active' || licRow.status === 'trialing',
+                                plan: { name: licRow.plan_code || 'trial' },
+                                expiration: licRow.next_renewal_at ? Math.floor(new Date(licRow.next_renewal_at).getTime() / 1000) : null,
+                                user_id: licRow.freemius_user_id,
+                                id: licRow.freemius_license_id
+                            }
+                        };
+                    } else {
+                        // Still not found after trying to add - this is a real error
+                        console.error(`❌ Failed to create/find WordPress user in DB: ${license_key.substring(0, 8)}...`);
+                        return res.status(500).json({ error: 'Database error: Unable to create user record' });
+                    }
+                } else {
+                    licRow = await getOrValidateLicense(license_key);
+                }
             }
         } else {
             // If DB is configured, use getOrValidateLicense (which validates with Freemius AND updates DB)
@@ -1852,8 +1892,11 @@ app.post('/generate', async (req, res) => {
         if (dbPool && licRow) {
             // Reload licRow to ensure we have the latest plan_code from Freemius
             // This is critical for Premium users who just upgraded
-            const [refreshedRows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
-            licRow = refreshedRows[0] || licRow;
+            // Skip for new WordPress users (they don't have Freemius yet)
+            if (!isNewWordPressUser) {
+                const [refreshedRows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
+                licRow = refreshedRows[0] || licRow;
+            }
             
             const planCode = licRow.plan_code || 'trial';
             console.log(`📋 License plan_code from DB: ${planCode}, status: ${licRow.status}`);
