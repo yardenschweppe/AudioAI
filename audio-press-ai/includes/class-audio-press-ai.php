@@ -38,6 +38,7 @@ class Audio_Press_AI {
     
     /**
      * Check if user has Pro license
+     * Always validates with Freemius API to ensure license status is current
      */
     private function is_pro_user() {
         // In dev mode, always return true (allows testing without license)
@@ -51,7 +52,15 @@ class Audio_Press_AI {
         
         try {
             $fs = apai_fs();
-            // Check if is_paying is a method (callable)
+            
+            // Note: The server will always validate with Freemius API on each request
+            // This check in WordPress is a first line of defense, but the server is the authority
+            // Check if user has active valid license (more reliable than is_paying)
+            if (is_callable(array($fs, 'has_active_valid_license'))) {
+                return $fs->has_active_valid_license();
+            }
+            
+            // Fallback to is_paying if has_active_valid_license is not available
             if (is_callable(array($fs, 'is_paying'))) {
                 return $fs->is_paying();
             } elseif (isset($fs->is_paying)) {
@@ -59,7 +68,8 @@ class Audio_Press_AI {
                 return (bool) $fs->is_paying;
             }
         } catch (Exception $e) {
-            // Silently fail if there's an error
+            // Log error for debugging
+            error_log('Audio-Press AI: Error checking Pro license: ' . $e->getMessage());
             return false;
         }
         
@@ -234,29 +244,18 @@ class Audio_Press_AI {
                                 <option value="shimmer" <?php selected($voice, 'shimmer'); ?>>Shimmer</option>
                             </select>
                             <p class="description">
-                                <?php _e('Default voice for audio generation. You can test different voices and languages using the Test feature below.', 'audio-press-ai'); ?>
+                                <?php _e('Default voice setting (for compatibility). Note: Piper TTS uses language-specific voice models, so the voice is automatically selected based on the detected language. You can test different languages using the Test feature below.', 'audio-press-ai'); ?>
                             </p>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row"><?php _e('Test Voices & Languages', 'audio-press-ai'); ?></th>
+                        <th scope="row"><?php _e('Test Languages', 'audio-press-ai'); ?></th>
                         <td>
                             <div id="audio-press-ai-test-section" style="padding: 15px; background: #f0f6fc; border: 1px solid #c3c4c7; border-radius: 4px;">
-                                <p style="margin-top: 0;"><?php _e('Test different voices and languages with a sample text:', 'audio-press-ai'); ?></p>
+                                <p style="margin-top: 0;"><?php _e('Test different languages and voices with a sample text:', 'audio-press-ai'); ?></p>
                                 <table style="width: 100%;">
                                     <tr>
                                         <td style="width: 50%; padding-right: 10px;">
-                                            <label for="audio-press-ai-test-voice" style="display: block; margin-bottom: 5px; font-weight: 600;"><?php _e('Voice:', 'audio-press-ai'); ?></label>
-                                            <select id="audio-press-ai-test-voice" style="width: 100%; padding: 6px;">
-                                                <option value="alloy">Alloy</option>
-                                                <option value="echo">Echo</option>
-                                                <option value="fable">Fable</option>
-                                                <option value="onyx">Onyx</option>
-                                                <option value="nova" selected>Nova</option>
-                                                <option value="shimmer">Shimmer</option>
-                                            </select>
-                                        </td>
-                                        <td style="width: 50%; padding-left: 10px;">
                                             <label for="audio-press-ai-test-language" style="display: block; margin-bottom: 5px; font-weight: 600;"><?php _e('Language:', 'audio-press-ai'); ?></label>
                                             <select id="audio-press-ai-test-language" style="width: 100%; padding: 6px;">
                                                 <option value="en" selected>English</option>
@@ -273,6 +272,15 @@ class Audio_Press_AI {
                                                 <option value="ru">Русский (Russian)</option>
                                                 <option value="zh">中文/日本語/한국어 (CJK)</option>
                                             </select>
+                                        </td>
+                                        <td style="width: 50%; padding-left: 10px;">
+                                            <label for="audio-press-ai-test-voice" style="display: block; margin-bottom: 5px; font-weight: 600;"><?php _e('Voice:', 'audio-press-ai'); ?></label>
+                                            <select id="audio-press-ai-test-voice" style="width: 100%; padding: 6px;">
+                                                <!-- Will be populated dynamically based on language selection -->
+                                            </select>
+                                            <p class="description" style="margin-top: 5px; font-size: 11px; color: #646970;">
+                                                <?php _e('Voice selection depends on the chosen language.', 'audio-press-ai'); ?>
+                                            </p>
                                         </td>
                                     </tr>
                                     <tr>
@@ -326,38 +334,139 @@ class Audio_Press_AI {
                 <?php submit_button(); ?>
             </form>
         </div>
-        <script>
-        jQuery(document).ready(function($) {
-            $('#audio-press-ai-test-button').on('click', function() {
-                var $btn = $(this);
-                var $status = $('#audio-press-ai-test-status');
-                var $resultRow = $('#audio-press-ai-test-result-row');
-                var $player = $('#audio-press-ai-test-player');
+        <script type="text/javascript">
+        (function($) {
+            'use strict';
+            
+            // Define available voices for each language
+            var languageVoices = {
+                'en': [
+                    { value: 'ljspeech', label: 'ljspeech (Default)' },
+                    { value: 'kristin', label: 'kristin' },
+                    { value: 'john', label: 'john' },
+                    { value: 'bryce', label: 'bryce' }
+                ],
+                'es': [
+                    { value: 'davefx', label: 'davefx (Default)' }
+                ],
+                'pt_PT': [
+                    { value: 'tugao', label: 'tugao (Default)' }
+                ],
+                'pt_BR': [
+                    { value: 'cadu', label: 'cadu (Default)' }
+                ],
+                'de': [
+                    { value: 'thorsten-low', label: 'thorsten (Low - CC0)' },
+                    { value: 'thorsten-high', label: 'thorsten (High)' }
+                ],
+                'nl_NL': [
+                    { value: 'ronnie', label: 'ronnie (Default)' }
+                ],
+                'nl_BE': [
+                    { value: 'rdh', label: 'rdh (Default)' },
+                    { value: 'nathalie', label: 'nathalie' }
+                ],
+                'da': [
+                    { value: 'talesyntese', label: 'talesyntese (Default)' }
+                ],
+                'sv': [
+                    { value: 'nst', label: 'nst (Default)' }
+                ],
+                'he': [
+                    { value: 'default', label: 'Default' }
+                ],
+                'ar': [
+                    { value: 'default', label: 'Default' }
+                ],
+                'ru': [
+                    { value: 'default', label: 'Default' }
+                ],
+                'zh': [
+                    { value: 'default', label: 'Default' }
+                ]
+            };
+            
+            // Function to update voice options based on selected language
+            function updateVoiceOptions() {
+                var $languageSelect = $('#audio-press-ai-test-language');
+                var $voiceSelect = $('#audio-press-ai-test-voice');
+                var selectedLang = $languageSelect.val();
                 
-                var voice = $('#audio-press-ai-test-voice').val();
-                var language = $('#audio-press-ai-test-language').val();
-                var text = $('#audio-press-ai-test-text').val().trim();
+                // Clear existing options
+                $voiceSelect.empty();
                 
-                if (!text) {
-                    alert('<?php esc_js_e('Please enter test text', 'audio-press-ai'); ?>');
+                // Get voices for selected language
+                var voices = languageVoices[selectedLang] || [{ value: 'default', label: 'Default' }];
+                
+                // Add options
+                $.each(voices, function(index, voice) {
+                    $voiceSelect.append($('<option>', {
+                        value: voice.value,
+                        text: voice.label,
+                        selected: index === 0 // Select first option by default
+                    }));
+                });
+            }
+            
+            $(document).ready(function() {
+                console.log('Audio-Press AI: Test script loaded');
+                
+                // Initialize voice options for default language
+                updateVoiceOptions();
+                
+                // Update voice options when language changes
+                $('#audio-press-ai-test-language').on('change', function() {
+                    updateVoiceOptions();
+                });
+                
+                var $testBtn = $('#audio-press-ai-test-button');
+                
+                if (!$testBtn.length) {
+                    console.error('Audio-Press AI: Test button not found on page');
                     return;
                 }
                 
-                $btn.prop('disabled', true);
-                $status.html('<span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span><?php esc_js_e('Generating...', 'audio-press-ai'); ?>').show();
-                $resultRow.hide();
-                $player.empty();
+                console.log('Audio-Press AI: Test button found, binding click handler');
                 
-                $.ajax({
-                    url: '<?php echo esc_js(admin_url('admin-ajax.php')); ?>',
-                    type: 'POST',
-                    data: {
-                        action: 'audio_press_ai_test_generate',
-                        voice: voice,
-                        language: language,
-                        text: text,
-                        nonce: '<?php echo wp_create_nonce('audio_press_ai_test'); ?>'
-                    },
+                $testBtn.on('click', function(e) {
+                    e.preventDefault();
+                    console.log('Audio-Press AI: Test button clicked');
+                    
+                    var $btn = $(this);
+                    var $status = $('#audio-press-ai-test-status');
+                    var $resultRow = $('#audio-press-ai-test-result-row');
+                    var $player = $('#audio-press-ai-test-player');
+                    
+                    var language = $('#audio-press-ai-test-language').val();
+                    var voice = $('#audio-press-ai-test-voice').val();
+                    var text = $('#audio-press-ai-test-text').val().trim();
+                    
+                    console.log('Audio-Press AI: Test params - language:', language, 'voice:', voice, 'text length:', text.length);
+                    
+                    if (!text) {
+                        alert('<?php esc_js_e('Please enter test text', 'audio-press-ai'); ?>');
+                        return;
+                    }
+                    
+                    $btn.prop('disabled', true);
+                    $status.html('<span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span><?php esc_js_e('Generating...', 'audio-press-ai'); ?>').show();
+                    $resultRow.hide();
+                    $player.empty();
+                    
+                    var ajaxUrl = typeof ajaxurl !== 'undefined' ? ajaxurl : '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';
+                    console.log('Audio-Press AI: Sending AJAX request to:', ajaxUrl);
+                    
+                    $.ajax({
+                        url: ajaxUrl,
+                        type: 'POST',
+                        dataType: 'json',
+                        data: {
+                            action: 'audio_press_ai_test_generate',
+                            language: language,
+                            voice: voice,
+                            text: text,
+                            nonce: '<?php echo wp_create_nonce('audio_press_ai_test'); ?>'
+                        },
                     success: function(response) {
                         $btn.prop('disabled', false);
                         if (response.success) {
@@ -444,16 +553,52 @@ class Audio_Press_AI {
                             
                             audio.load();
                         } else {
-                            $status.html('<span style="color: #d63638;">❌ ' + (response.data && response.data.message ? response.data.message : '<?php esc_js_e('Error', 'audio-press-ai'); ?>') + '</span>');
+                            var errorMsg = response.data && response.data.message ? response.data.message : '<?php esc_js_e('Error', 'audio-press-ai'); ?>';
+                            var isLanguageMismatch = response.data && response.data.language_mismatch;
+                            
+                            // Show language mismatch with special styling
+                            if (isLanguageMismatch) {
+                                var detectedLang = response.data.detected_language;
+                                var selectedLang = response.data.selected_language;
+                                var languageNames = {
+                                    'en': 'English', 'es': 'Español (Spanish)', 'pt_PT': 'Português PT', 'pt_BR': 'Português BR',
+                                    'de': 'Deutsch (German)', 'nl_NL': 'Nederlands NL', 'nl_BE': 'Nederlands BE',
+                                    'da': 'Dansk (Danish)', 'sv': 'Svenska (Swedish)', 'he': 'עברית', 'ar': 'ערבית',
+                                    'ru': 'Русский', 'zh': '中文/日本語/한국어'
+                                };
+                                
+                                var detectedName = languageNames[detectedLang] || detectedLang;
+                                var selectedName = languageNames[selectedLang] || selectedLang;
+                                
+                                // Update language selector to detected language
+                                $('#audio-press-ai-test-language').val(detectedLang);
+                                updateVoiceOptions(); // Update voice options for detected language
+                                
+                                $status.html('<div style="padding: 12px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; margin-top: 10px;">' +
+                                    '<strong style="color: #856404; display: block; margin-bottom: 8px;">⚠️ ' + errorMsg + '</strong>' +
+                                    '<p style="margin: 0; font-size: 13px; color: #856404;">' +
+                                    '<?php esc_js_e('The text appears to be in', 'audio-press-ai'); ?> <strong>' + detectedName + '</strong>, ' +
+                                    '<?php esc_js_e('but you selected', 'audio-press-ai'); ?> <strong>' + selectedName + '</strong>. ' +
+                                    '<?php esc_js_e('Language has been updated automatically. You can try again.', 'audio-press-ai'); ?>' +
+                                    '</p>' +
+                                    '</div>');
+                            } else {
+                                $status.html('<span style="color: #d63638;">❌ ' + errorMsg + '</span>');
+                            }
                         }
                     },
-                    error: function() {
+                    error: function(xhr, status, error) {
                         $btn.prop('disabled', false);
-                        $status.html('<span style="color: #d63638;">❌ <?php esc_js_e('Network error', 'audio-press-ai'); ?></span>');
+                        console.error('Audio-Press AI Test Error:', status, error, xhr);
+                        var errorMsg = '<?php esc_js_e('Network error', 'audio-press-ai'); ?>';
+                        if (xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+                            errorMsg = xhr.responseJSON.data.message;
+                        }
+                        $status.html('<span style="color: #d63638;">❌ ' + errorMsg + '</span>');
                     }
                 });
             });
-        });
+        })(jQuery);
         </script>
         <?php
     }
@@ -795,6 +940,61 @@ class Audio_Press_AI {
         
         // Get language if provided (for override)
         $language = isset($_POST['language']) ? sanitize_text_field($_POST['language']) : null;
+        
+        // Check language mismatch if language is explicitly provided
+        if ($language) {
+            $api_server_url_temp = AUDIO_PRESS_AI_API_URL;
+            $api_server_url_temp = esc_url_raw(rtrim($api_server_url_temp, '/'));
+            
+            if (!empty($api_server_url_temp) && filter_var($api_server_url_temp, FILTER_VALIDATE_URL)) {
+                // Call detect-language endpoint to check if text language matches selected language
+                $detect_response = wp_remote_request($api_server_url_temp . '/detect-language', array(
+                    'method' => 'POST',
+                    'headers' => array('Content-Type' => 'application/json'),
+                    'body' => json_encode(array('text' => substr($content, 0, 1000)), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), // Use first 1000 chars for detection
+                    'timeout' => 10,
+                    'sslverify' => true,
+                ));
+                
+                if (!is_wp_error($detect_response)) {
+                    $detect_body = wp_remote_retrieve_body($detect_response);
+                    $detect_data = json_decode($detect_body, true);
+                    
+                    if (isset($detect_data['detected']) && $detect_data['detected'] !== $language) {
+                        // Language mismatch detected
+                        $language_names = array(
+                            'en' => 'English',
+                            'es' => 'Español (Spanish)',
+                            'pt_PT' => 'Português PT (Portuguese Portugal)',
+                            'pt_BR' => 'Português BR (Portuguese Brazil)',
+                            'de' => 'Deutsch (German)',
+                            'nl_NL' => 'Nederlands NL (Dutch Netherlands)',
+                            'nl_BE' => 'Nederlands BE (Dutch Belgium)',
+                            'da' => 'Dansk (Danish)',
+                            'sv' => 'Svenska (Swedish)',
+                            'he' => 'עברית (Hebrew)',
+                            'ar' => 'ערבית (Arabic)',
+                            'ru' => 'Русский (Russian)',
+                            'zh' => '中文/日本語/한국어 (CJK)'
+                        );
+                        
+                        $detected_name = isset($language_names[$detect_data['detected']]) ? $language_names[$detect_data['detected']] : $detect_data['detected'];
+                        $selected_name = isset($language_names[$language]) ? $language_names[$language] : $language;
+                        
+                        wp_send_json_error(array(
+                            'message' => sprintf(
+                                __('⚠️ Language mismatch detected! The text appears to be in %s, but you selected %s. Please select the correct language for best audio quality.', 'audio-press-ai'),
+                                $detected_name,
+                                $selected_name
+                            ),
+                            'detected_language' => $detect_data['detected'],
+                            'selected_language' => $language,
+                            'language_mismatch' => true
+                        ));
+                    }
+                }
+            }
+        }
         
         // Call remote API server
         // Note: $model parameter is kept for backward compatibility but not used by server (Piper TTS is language-based)
@@ -1177,13 +1377,8 @@ class Audio_Press_AI {
         }
         
         // Get and validate test parameters
-        $voice = isset($_POST['voice']) ? sanitize_text_field($_POST['voice']) : 'nova';
-        $allowed_voices = array('alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer');
-        if (!in_array($voice, $allowed_voices, true)) {
-            $voice = 'nova'; // Default fallback
-        }
-        
         $language = isset($_POST['language']) ? sanitize_text_field($_POST['language']) : null;
+        $voice = isset($_POST['voice']) ? sanitize_text_field($_POST['voice']) : null;
         
         // Get text - use wp_unslash and strip_tags to preserve special characters needed for TTS
         $text = isset($_POST['text']) ? wp_unslash($_POST['text']) : '';
@@ -1201,6 +1396,61 @@ class Audio_Press_AI {
             $text = substr($text, 0, 500);
         }
         
+        // Check language mismatch: detect text language and warn if it doesn't match selected language
+        if ($language) {
+            $api_server_url = AUDIO_PRESS_AI_API_URL;
+            $api_server_url = esc_url_raw(rtrim($api_server_url, '/'));
+            
+            if (!empty($api_server_url) && filter_var($api_server_url, FILTER_VALIDATE_URL)) {
+                // Call detect-language endpoint to check if text language matches selected language
+                $detect_response = wp_remote_request($api_server_url . '/detect-language', array(
+                    'method' => 'POST',
+                    'headers' => array('Content-Type' => 'application/json'),
+                    'body' => json_encode(array('text' => $text), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'timeout' => 10,
+                    'sslverify' => true,
+                ));
+                
+                if (!is_wp_error($detect_response)) {
+                    $detect_body = wp_remote_retrieve_body($detect_response);
+                    $detect_data = json_decode($detect_body, true);
+                    
+                    if (isset($detect_data['detected']) && $detect_data['detected'] !== $language) {
+                        // Language mismatch detected
+                        $language_names = array(
+                            'en' => 'English',
+                            'es' => 'Español (Spanish)',
+                            'pt_PT' => 'Português PT (Portuguese Portugal)',
+                            'pt_BR' => 'Português BR (Portuguese Brazil)',
+                            'de' => 'Deutsch (German)',
+                            'nl_NL' => 'Nederlands NL (Dutch Netherlands)',
+                            'nl_BE' => 'Nederlands BE (Dutch Belgium)',
+                            'da' => 'Dansk (Danish)',
+                            'sv' => 'Svenska (Swedish)',
+                            'he' => 'עברית (Hebrew)',
+                            'ar' => 'ערבית (Arabic)',
+                            'ru' => 'Русский (Russian)',
+                            'zh' => '中文/日本語/한국어 (CJK)'
+                        );
+                        
+                        $detected_name = isset($language_names[$detect_data['detected']]) ? $language_names[$detect_data['detected']] : $detect_data['detected'];
+                        $selected_name = isset($language_names[$language]) ? $language_names[$language] : $language;
+                        
+                        wp_send_json_error(array(
+                            'message' => sprintf(
+                                __('⚠️ Language mismatch detected! The text appears to be in %s, but you selected %s. Please select the correct language for best results.', 'audio-press-ai'),
+                                $detected_name,
+                                $selected_name
+                            ),
+                            'detected_language' => $detect_data['detected'],
+                            'selected_language' => $language,
+                            'language_mismatch' => true
+                        ));
+                    }
+                }
+            }
+        }
+        
         // API Server URL is constant
         $api_server_url = AUDIO_PRESS_AI_API_URL;
         $api_server_url = esc_url_raw($api_server_url);
@@ -1212,7 +1462,9 @@ class Audio_Press_AI {
         $test_post_id = -1;
         
         // Call remote API server
-        $response = $this->call_remote_api($api_server_url, $license_key, get_current_user_id(), 'tts-1-hd', $voice, $text, $language, $test_post_id);
+        // Note: $model and $voice parameters are sent but server uses language to select model
+        // The voice parameter is sent for future server support of voice selection
+        $response = $this->call_remote_api($api_server_url, $license_key, get_current_user_id(), 'tts-1-hd', 'nova', $text, $language, $test_post_id, $voice);
         
         if (is_wp_error($response)) {
             wp_send_json_error(array('message' => $response->get_error_message()));
@@ -1344,7 +1596,7 @@ class Audio_Press_AI {
     /**
      * Call remote API server
      */
-    private function call_remote_api($api_url, $license_key, $wp_user_id, $model, $voice, $text, $language = null, $post_id = null) {
+    private function call_remote_api($api_url, $license_key, $wp_user_id, $model, $voice, $text, $language = null, $post_id = null, $voice_name = null) {
         // Validate and sanitize URL
         $base_url = esc_url_raw(rtrim($api_url, '/'));
         if (empty($base_url) || !filter_var($base_url, FILTER_VALIDATE_URL)) {
@@ -1367,6 +1619,10 @@ class Audio_Press_AI {
         // Add language if provided
         if ($language) {
             $body['language'] = sanitize_text_field($language);
+        }
+        // Add voice_name if provided (for voice selection within language)
+        if ($voice_name) {
+            $body['voice_name'] = sanitize_text_field($voice_name);
         }
         // Always send post_id (required by server for DB tracking)
         if ($post_id) {
@@ -1653,6 +1909,7 @@ class Audio_Press_AI {
      * Enqueue admin scripts and styles
      */
     public function enqueue_admin_assets($hook) {
+        // Load on post editor pages
         if (in_array($hook, array('post.php', 'post-new.php'))) {
             wp_enqueue_script(
                 'audio-press-ai-admin',
@@ -1670,6 +1927,20 @@ class Audio_Press_AI {
                 'generating' => esc_html__('Generating audio... This may take 30 seconds...', 'audio-press-ai'),
             ));
             
+            wp_enqueue_style(
+                'audio-press-ai-admin',
+                AUDIO_PRESS_AI_PLUGIN_URL . 'assets/css/admin.css',
+                array(),
+                AUDIO_PRESS_AI_VERSION
+            );
+        }
+        
+        // Load jQuery and admin styles on settings page (for test feature)
+        if ($hook === 'audioai_page_audio-press-ai-settings' || $hook === 'toplevel_page_audioai') {
+            // jQuery is already loaded in admin, but ensure it's available
+            wp_enqueue_script('jquery');
+            
+            // Load admin CSS for player styles
             wp_enqueue_style(
                 'audio-press-ai-admin',
                 AUDIO_PRESS_AI_PLUGIN_URL . 'assets/css/admin.css',

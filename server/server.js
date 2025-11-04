@@ -938,18 +938,27 @@ async function getOrValidateLicense(licenseKey) {
     // This ensures plan_code stays in sync with Freemius
     console.log(`🔄 Validating license ${licenseKey.substring(0, 8)}... with Freemius...`);
     const validation = await validateFreemiusLicense(licenseKey);
+    
+    // If validation fails, NEVER use cached license - always return null
+    // This ensures that if a user was downgraded to free, they can't use cached Pro/trial data
     if (!validation.valid) {
-        // Log the error details for debugging
         console.error(`❌ Freemius validation failed for ${licenseKey.substring(0, 8)}...: ${validation.error || 'Unknown error'}`);
-        
-        // If validation fails, check if we have a cached license (fallback)
-        const cached = await loadLicenseFromDB(licenseKey);
-        if (cached && cached.status === 'active') {
-            console.log(`⚠️  Freemius validation failed, using cached license for ${licenseKey.substring(0, 8)}... (plan_code: ${cached.plan_code}, status: ${cached.status})`);
-            console.log(`   Note: This is a fallback. The license should be validated with Freemius to get the latest plan_code.`);
-            return cached;
-        }
-        console.log(`❌ License validation failed and no valid cache for ${licenseKey.substring(0, 8)}...`);
+        console.log(`   Rejecting request - license validation must succeed to use service`);
+        return null;
+    }
+    
+    // Validation succeeded - check if user has free plan
+    const planName = validation.license?.plan?.name || 'trial';
+    const planCode = String(planName).toLowerCase();
+    
+    // If user has free plan, reject access (they should not be able to use the service)
+    if (planCode === 'free' || planCode === 'free_plan') {
+        console.log(`🚫 User has free plan - rejecting access for ${licenseKey.substring(0, 8)}...`);
+        // Update DB to reflect free status
+        await dbPool.query(
+            `UPDATE \`${DB_LICENSES_TABLE}\` SET plan_code='free', status='expired', validated_at=NOW() WHERE license_key=?`,
+            [licenseKey]
+        );
         return null;
     }
     
@@ -1250,10 +1259,40 @@ async function detectLanguage(text, hintLang) {
 }
 
 /**
- * Get model path for a language
+ * Get model path for a language and optional voice
  * Returns { modelPath, language } or throws error if language not supported
  */
-async function getModelForLanguage(text, hintLang) {
+async function getModelForLanguage(text, hintLang, voiceName = null) {
+    // Voice model mapping - maps language + voice name to model path
+    const voiceModelMap = {
+        // English voices
+        'en': {
+            'ljspeech': '/opt/piper/voices/en/en_US/ljspeech/medium/en_US-ljspeech-medium.onnx',
+            'kristin': '/opt/piper/voices/en/en_US/kristin/medium/en_US-kristin-medium.onnx',
+            'john': '/opt/piper/voices/en/en_US/john/medium/en_US-john-medium.onnx',
+            'bryce': '/opt/piper/voices/en/en_US/bryce/medium/en_US-bryce-medium.onnx'
+        },
+        // Dutch BE voices
+        'nl_BE': {
+            'rdh': '/opt/piper/voices/nl/nl_BE/rdh/medium/nl_BE-rdh-medium.onnx',
+            'nathalie': '/opt/piper/voices/nl/nl_BE/nathalie/medium/nl_BE-nathalie-medium.onnx'
+        },
+        // German voices
+        'de': {
+            'thorsten-low': '/opt/piper/voices/de/de_DE/thorsten/low/de_DE-thorsten-low.onnx',
+            'thorsten-high': '/opt/piper/voices/de/de_DE/thorsten/high/de_DE-thorsten-high.onnx'
+        }
+    };
+    
+    // If voice_name is provided and language has voice options, try to use it
+    if (hintLang && voiceName && voiceModelMap[hintLang] && voiceModelMap[hintLang][voiceName]) {
+        const modelPath = voiceModelMap[hintLang][voiceName];
+        if (fs.existsSync(modelPath)) {
+            return { modelPath, language: hintLang };
+        }
+        // If specified voice model doesn't exist, fall through to default
+    }
+    
     // if client explicitly requested a supported language, prefer it
     if (hintLang && PIPER_MODELS[hintLang]) {
       const mp = PIPER_MODELS[hintLang];
@@ -1574,7 +1613,7 @@ app.post('/detect-language', async (req, res) => {
  */
 app.post('/generate', async (req, res) => {
     try {
-        const { text, post_id, wp_post_id, license_key, language } = req.body || {};
+        const { text, post_id, wp_post_id, license_key, language, voice_name } = req.body || {};
         const effectivePostId = wp_post_id || post_id;
         
         // Validate input
@@ -1644,22 +1683,24 @@ app.post('/generate', async (req, res) => {
             if (dbPool) {
                 licRow = await getOrValidateLicense(license_key);
                 
-                // If no license in DB and Freemius validation failed, allow trial for new users
+                // If no license returned, it means validation failed or user has free plan
+                // NEVER create trial entry automatically - always require valid Freemius validation
                 if (!licRow) {
-                    console.log(`⚠️  No license found in DB for ${license_key.substring(0, 8)}..., allowing trial access`);
-                    // Create a trial license entry in DB
-                    await dbPool.query(
-                        `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, is_test)
-                         VALUES (?, 'trial', 'trialing', 'monthly', 0)
-                         ON DUPLICATE KEY UPDATE plan_code='trial', status='trialing'`,
-                        [license_key]
-                    );
-                    // Reload the license
-                    const [rows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
-                    licRow = rows[0] || null;
+                    console.log(`❌ No valid license found for ${license_key.substring(0, 8)}... - rejecting request`);
+                    return res.status(403).json({ 
+                        error: 'Invalid license or subscription required. Please upgrade to a paid plan to use this service.' 
+                    });
                 }
                 
-                if (!licRow || !['trialing','active'].includes(licRow.status)) {
+                // Check if user has free plan (should not reach here, but double-check)
+                if (licRow.plan_code === 'free' || licRow.plan_code === 'free_plan') {
+                    console.log(`🚫 User has free plan - rejecting access for ${license_key.substring(0, 8)}...`);
+                    return res.status(403).json({ 
+                        error: 'Free plan does not have access to this service. Please upgrade to a paid plan.' 
+                    });
+                }
+                
+                if (!['trialing','active'].includes(licRow.status)) {
                     return res.status(403).json({ error: 'Invalid or inactive license' });
                 }
                 // Convert DB row to validation format for backward compatibility
@@ -1782,12 +1823,12 @@ app.post('/generate', async (req, res) => {
             }
         }
         
-        // Step 4: Get model for language
+        // Step 4: Get model for language (and optional voice)
         // Normalize text: replace all newlines/carriage returns with spaces to ensure Piper processes entire text
         const normalizedText = textToProcess.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
         console.log(`📝 Normalized text: length=${normalizedText.length} (original: ${textToProcess.length})`);
         
-        const { modelPath, language: chosenLanguage } = await getModelForLanguage(normalizedText, language || null);
+        const { modelPath, language: chosenLanguage } = await getModelForLanguage(normalizedText, language || null, voice_name || null);
         
         const tempFilePath = path.join('/tmp', `piper_out_${Date.now()}_${Math.floor(Math.random()*1000)}.wav`);
         
