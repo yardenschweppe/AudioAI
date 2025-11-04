@@ -1324,12 +1324,16 @@ function runPiper(text, modelPath, outPath) {
 
         // Write text to stdin and end it
         // Piper expects text on stdin, terminated with newline
-        // Text should already be normalized (newlines replaced) before calling this function
+        // CRITICAL: Piper reads ONLY until the first newline, so we must remove ALL newlines from the text!
         try {
+            // Remove ALL newlines from text (Piper stops at first \n)
+            const cleanedText = textToProcess.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+            
             // Add newline at the end (Piper reads until newline)
-            const textWithNewline = textToProcess + '\n';
+            const textWithNewline = cleanedText + '\n';
             
             console.log(`   Sending to Piper stdin: length=${textWithNewline.length} chars`);
+            console.log(`   Text has newlines: ${textToProcess.includes('\n') ? 'YES (REMOVED)' : 'NO'}`);
             console.log(`   First 50 chars: "${textWithNewline.substring(0, 50)}..."`);
             console.log(`   Last 50 chars: "...${textWithNewline.substring(Math.max(0, textWithNewline.length - 50))}"`);
             
@@ -1368,12 +1372,16 @@ function runPiper(text, modelPath, outPath) {
  */
 async function synthToWav(text, modelPath, outFile) {
     console.log(`🎵 synthToWav: input_text_length=${text.length}, output_file=${path.basename(outFile)}`);
+    console.log(`🎵 Text contains newlines: ${text.includes('\n') ? 'YES' : 'NO'}, \\r: ${text.includes('\r') ? 'YES' : 'NO'}`);
+    console.log(`🎵 First 100 chars: "${text.substring(0, 100)}"`);
+    console.log(`🎵 Last 100 chars: "${text.substring(Math.max(0, text.length - 100))}"`);
     
     const parts = splitIntoTwo(text);
     console.log(`🎵 Split into ${parts.length} part(s)`);
     
     if (parts.length === 1) { 
         console.log(`🎵 Processing single part: length=${parts[0].length}`);
+        console.log(`🎵 Part contains newlines: ${parts[0].includes('\n') ? 'YES - THIS IS THE PROBLEM!' : 'NO - OK'}`);
         await runPiper(parts[0], modelPath, outFile); 
         return; 
     }

@@ -808,23 +808,46 @@ jQuery(document).ready(function($) {
                     container.html(
                         '<button type="button" class="button button-primary button-large" id="audio-press-ai-generate" style="width: 100%;">' +
                         'Generate Audio Version (AI)' +
-                        '</button>'
+                        '</button>' +
+                        '<div id="audio-press-ai-status" style="margin-top: 10px; display: none;">' +
+                        '<p><span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span>' +
+                        '<span id="audio-press-ai-status-text"></span></p>' +
+                        '</div>'
                     );
                     
                     // Reset language selection
                     selectedLanguage = null;
                     
-                    // Re-bind event
-                    $('#audio-press-ai-generate').on('click', function() {
+                    // Re-bind the generate button click event (only once!)
+                    var newGenerateBtn = $('#audio-press-ai-generate');
+                    newGenerateBtn.off('click'); // Remove any existing handlers
+                    newGenerateBtn.on('click', function() {
+                        var $btn = $(this);
+                        // Show immediate visual feedback
+                        setButtonLoading($btn, 'Preparing...');
+                        
+                        selectedLanguage = null; // Reset language selection
+                        
+                        // Show language selector and wait for user to select language & click "Generate Audio"
                         detectLanguageAndShowSelector(function() {
-                            // After detection, the generate button is replaced with language selector
+                            // This callback is called after language selector is shown
+                            // The actual generation happens when user clicks "Generate Audio" in the selector
+                            restoreButton($btn); // Re-enable button in case user cancels
                         });
                     });
                     
-                    statusText.text(response.data.message);
+                    // Update status references after HTML replacement
+                    statusDiv = $('#audio-press-ai-status');
+                    statusText = $('#audio-press-ai-status-text');
+                    
+                    // Show success message
+                    statusDiv.show();
+                    statusDiv.css('border-left-color', '#00a32a'); // Green for success
+                    statusText.text('✅ ' + response.data.message);
                     setTimeout(function() {
                         statusDiv.hide();
-                    }, 2000);
+                        statusDiv.css('border-left-color', '#2271b1'); // Reset to blue
+                    }, 3000);
                 } else {
                     statusText.text(response.data.message || 'Error deleting audio');
                     deleteBtn.prop('disabled', false);

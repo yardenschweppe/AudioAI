@@ -551,37 +551,65 @@ class Audio_Press_AI {
             wp_send_json_error(array('message' => __('Invalid API server URL', 'audio-press-ai')));
         }
         
-        // Get post content - use get_the_content() for better Gutenberg support
+        // Get post content - properly handle Gutenberg blocks
         $post = get_post($post_id);
         if (!$post) {
             wp_send_json_error(array('message' => __('Post not found', 'audio-press-ai')));
         }
         
-        // Setup post data for proper content rendering
-        setup_postdata($post);
+        error_log('Audio-Press AI [DEBUG]: Post ID: ' . $post_id);
+        error_log('Audio-Press AI [DEBUG]: Post type: ' . $post->post_type);
+        error_log('Audio-Press AI [DEBUG]: Post status: ' . $post->post_status);
+        error_log('Audio-Press AI [DEBUG]: Post content (raw field): ' . strlen($post->post_content) . ' chars');
         
-        // Get content - this will parse Gutenberg blocks properly
-        $content = get_the_content(null, false, $post);
-        
-        // Reset post data
-        wp_reset_postdata();
-        
-        // Debug: log raw content
-        error_log('Audio-Press AI [DEBUG]: Raw content length: ' . strlen($content) . ' chars');
-        error_log('Audio-Press AI [DEBUG]: Raw content preview: ' . substr($content, 0, 200));
+        // Get raw content
+        $content = $post->post_content;
         
         if (empty($content)) {
             wp_send_json_error(array('message' => __('Post content is empty', 'audio-press-ai')));
         }
         
+        // Parse Gutenberg blocks if available
+        if (function_exists('parse_blocks')) {
+            $blocks = parse_blocks($content);
+            $parsed_content = '';
+            
+            foreach ($blocks as $block) {
+                // Extract text content from blocks
+                if (!empty($block['blockName']) && !empty($block['innerHTML'])) {
+                    $parsed_content .= $block['innerHTML'] . "\n";
+                } elseif (!empty($block['innerHTML'])) {
+                    $parsed_content .= $block['innerHTML'] . "\n";
+                } elseif (isset($block['innerContent']) && is_array($block['innerContent'])) {
+                    foreach ($block['innerContent'] as $inner) {
+                        if (is_string($inner)) {
+                            $parsed_content .= $inner . "\n";
+                        }
+                    }
+                }
+            }
+            
+            if (!empty($parsed_content)) {
+                $content = $parsed_content;
+            }
+        }
+        
+        error_log('Audio-Press AI [DEBUG]: After parse_blocks length: ' . strlen($content) . ' chars');
+        error_log('Audio-Press AI [DEBUG]: After parse_blocks preview (first 300): ' . substr($content, 0, 300));
+        
         // Apply the_content filters to render blocks and shortcodes
         $content = apply_filters('the_content', $content);
+        
+        error_log('Audio-Press AI [DEBUG]: After apply_filters length: ' . strlen($content) . ' chars');
         
         // Now strip all HTML tags
         $content = wp_strip_all_tags($content);
         
+        // Decode HTML entities (like &nbsp;, &quot;, etc.)
+        $content = html_entity_decode($content, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        
         error_log('Audio-Press AI [DEBUG]: After strip_tags length: ' . strlen($content) . ' chars');
-        error_log('Audio-Press AI [DEBUG]: After strip_tags preview: ' . substr($content, 0, 200));
+        error_log('Audio-Press AI [DEBUG]: After strip_tags preview (first 300): ' . substr($content, 0, 300));
         
         // Normalize whitespace but keep line breaks for better TTS
         $content = preg_replace('/[ \t]+/', ' ', $content); // Replace multiple spaces/tabs with single space
@@ -1017,14 +1045,25 @@ class Audio_Press_AI {
         
         // Validate text length
         if (empty($body['text']) || strlen($body['text']) > 50000) {
+            error_log('Audio-Press AI [DEBUG]: Text validation failed - empty: ' . (empty($body['text']) ? 'yes' : 'no') . ', length: ' . strlen($body['text']));
             return new WP_Error('invalid_text', __('Text is empty or too long', 'audio-press-ai'));
         }
+        
+        // Debug: log what we're about to send
+        error_log('Audio-Press AI [DEBUG]: Sending to server - text length: ' . strlen($body['text']) . ' chars');
+        error_log('Audio-Press AI [DEBUG]: Text to send (first 200 chars): ' . substr($body['text'], 0, 200));
+        error_log('Audio-Press AI [DEBUG]: Text to send (last 100 chars): ' . substr($body['text'], -100));
+        error_log('Audio-Press AI [DEBUG]: Language: ' . ($language ? $language : 'auto-detect'));
+        error_log('Audio-Press AI [DEBUG]: Post ID: ' . $body['post_id']);
         
         // Encode JSON with error checking
         $json_body = json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($json_body === false) {
+            error_log('Audio-Press AI [DEBUG]: JSON encoding failed: ' . json_last_error_msg());
             return new WP_Error('json_encode_error', __('Failed to encode request data', 'audio-press-ai'));
         }
+        
+        error_log('Audio-Press AI [DEBUG]: JSON body size: ' . strlen($json_body) . ' bytes');
         
         $args = array(
             'method' => 'POST',
