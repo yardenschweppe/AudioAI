@@ -736,11 +736,58 @@ class Audio_Press_AI {
         }
         
         require_once(ABSPATH . 'wp-admin/includes/image.php');
+        require_once(ABSPATH . 'wp-admin/includes/media.php');
+        
         $attach_data = wp_generate_attachment_metadata($attachment_id, $upload['file']);
         
-        // Debug: Log metadata
+        // For audio files, WordPress may not always extract metadata correctly
+        // Try wp_read_audio_metadata() which uses getID3 internally
+        if (empty($attach_data['length']) || empty($attach_data['length_formatted'])) {
+            if (function_exists('wp_read_audio_metadata')) {
+                $audio_meta = wp_read_audio_metadata($upload['file']);
+                
+                if (!empty($audio_meta['length']) || !empty($audio_meta['length_formatted'])) {
+                    $attach_data = array_merge($attach_data, $audio_meta);
+                    
+                    if (defined('WP_DEBUG') && WP_DEBUG) {
+                        error_log('Audio-Press AI: Extracted audio metadata: length=' . ($audio_meta['length'] ?? 'N/A') . ' seconds');
+                    }
+                }
+            }
+        }
+        
+        // Fallback: If still no duration, try to extract it manually
+        if (empty($attach_data['length']) && file_exists($upload['file'])) {
+            // Try using getID3 class directly (WordPress includes it)
+            $getid3_path = ABSPATH . WPINC . '/ID3/getid3.php';
+            if (file_exists($getid3_path)) {
+                require_once($getid3_path);
+                
+                if (class_exists('getID3')) {
+                    try {
+                        $getID3 = new getID3();
+                        $file_info = @$getID3->analyze($upload['file']);
+                        
+                        if (isset($file_info['playtime_seconds']) && $file_info['playtime_seconds'] > 0) {
+                            $attach_data['length'] = (int) round($file_info['playtime_seconds']);
+                            $attach_data['length_formatted'] = gmdate('i:s', $attach_data['length']);
+                            
+                            if (defined('WP_DEBUG') && WP_DEBUG) {
+                                error_log('Audio-Press AI: Extracted duration using getID3 directly: ' . $attach_data['length'] . ' seconds');
+                            }
+                        }
+                    } catch (Exception $e) {
+                        if (defined('WP_DEBUG') && WP_DEBUG) {
+                            error_log('Audio-Press AI: getID3 error: ' . $e->getMessage());
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Debug: Log final metadata
         if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log('Audio-Press AI: Generated metadata: ' . print_r($attach_data, true));
+            error_log('Audio-Press AI: Final metadata: ' . print_r($attach_data, true));
         }
         
         wp_update_attachment_metadata($attachment_id, $attach_data);
