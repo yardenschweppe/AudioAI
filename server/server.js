@@ -903,66 +903,19 @@ async function upsertLicenseFromValidation(licenseKey, validation) {
         const is_test = (TEST_MODE || licenseKey === 'TEST' || licenseKey === TEST_LICENSE_KEY) && !isRealFreemiusLicense ? 1 : 0;
         
         const next_renewal_at = lic.next_bill_at ? new Date(lic.next_bill_at) : (lic.expires ? new Date(lic.expires * 1000) : null);
-        
-        // Extract Freemius IDs
-        const freemius_user_id = lic.user_id || validation.user_id || null;
-        const freemius_license_id = lic.id || lic.license_id || validation.license_id || null;
 
-        // Check if freemius_user_id and freemius_license_id columns exist
-        let hasFreemiusColumns = false;
-        try {
-            const [columns] = await dbPool.query(`SHOW COLUMNS FROM \`${DB_LICENSES_TABLE}\` LIKE 'freemius_user_id'`);
-            hasFreemiusColumns = columns.length > 0;
-        } catch (e) {
-            // Ignore - will try to add columns if needed
-        }
-        
-        // If columns don't exist, try to add them
-        if (!hasFreemiusColumns) {
-            try {
-                await dbPool.query(`ALTER TABLE \`${DB_LICENSES_TABLE}\` ADD COLUMN \`freemius_user_id\` BIGINT DEFAULT NULL`);
-                await dbPool.query(`ALTER TABLE \`${DB_LICENSES_TABLE}\` ADD COLUMN \`freemius_license_id\` BIGINT DEFAULT NULL`);
-                console.log(`✅ Added freemius_user_id and freemius_license_id columns to licenses table`);
-                hasFreemiusColumns = true;
-            } catch (alterError) {
-                console.log(`⚠️  Could not add Freemius ID columns (they may already exist): ${alterError.message}`);
-                // Continue anyway - these columns are optional
-            }
-        }
-
-        // Build INSERT query with optional Freemius ID columns
-        if (hasFreemiusColumns) {
-            await dbPool.query(
-                `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, is_test, validated_at, next_renewal_at, freemius_user_id, freemius_license_id)
-                 VALUES (?, ?, ?, ?, ?, NOW(), ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE
-                   plan_code=VALUES(plan_code),
-                   status=VALUES(status),
-                   period=VALUES(period),
-                   is_test=VALUES(is_test),
-                   validated_at=VALUES(validated_at),
-                   next_renewal_at=VALUES(next_renewal_at),
-                   freemius_user_id=VALUES(freemius_user_id),
-                   freemius_license_id=VALUES(freemius_license_id)`,
-                [licenseKey, plan_code, status, period, is_test, next_renewal_at, freemius_user_id, freemius_license_id]
-            );
-        } else {
-            // Fallback if columns don't exist
-            await dbPool.query(
-                `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, is_test, validated_at, next_renewal_at)
-                 VALUES (?, ?, ?, ?, ?, NOW(), ?)
-                 ON DUPLICATE KEY UPDATE
-                   plan_code=VALUES(plan_code),
-                   status=VALUES(status),
-                   period=VALUES(period),
-                   is_test=VALUES(is_test),
-                   validated_at=VALUES(validated_at),
-                   next_renewal_at=VALUES(next_renewal_at)`,
-                [licenseKey, plan_code, status, period, is_test, next_renewal_at]
-            );
-        }
-        
-        console.log(`✅ License upserted successfully: ${licenseKey.substring(0, 8)}... (plan=${plan_code}, status=${status})`);
+        await dbPool.query(
+            `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, is_test, validated_at, next_renewal_at)
+             VALUES (?, ?, ?, ?, ?, NOW(), ?)
+             ON DUPLICATE KEY UPDATE
+               plan_code=VALUES(plan_code),
+               status=VALUES(status),
+               period=VALUES(period),
+               is_test=VALUES(is_test),
+               validated_at=VALUES(validated_at),
+               next_renewal_at=VALUES(next_renewal_at)`,
+            [licenseKey, plan_code, status, period, is_test, next_renewal_at]
+        );
         return true;
     } catch (e) {
         console.error('Error upserting license:', e.message);
@@ -1726,66 +1679,20 @@ app.post('/generate', async (req, res) => {
                 licRow = await getOrValidateLicense(license_key);
             }
         } else {
-            // If DB is configured, validate with Freemius first, then check/create DB record
+            // If DB is configured, use getOrValidateLicense (which validates with Freemius AND updates DB)
             if (dbPool) {
-                // Step 1: Validate with Freemius first (this is the source of truth)
-                console.log(`🔐 Validating license ${license_key.substring(0, 8)}... with Freemius...`);
-                validation = await validateFreemiusLicense(license_key);
+                licRow = await getOrValidateLicense(license_key);
                 
-                // If validation fails, reject immediately
-                if (!validation.valid) {
-                    console.log(`❌ Freemius validation failed for ${license_key.substring(0, 8)}... - rejecting request`);
+                // If no license returned, it means validation failed or user has free plan
+                // NEVER create trial entry automatically - always require valid Freemius validation
+                if (!licRow) {
+                    console.log(`❌ No valid license found for ${license_key.substring(0, 8)}... - rejecting request`);
                     return res.status(403).json({ 
                         error: 'Invalid license or subscription required. Please upgrade to a paid plan to use this service.' 
                     });
                 }
                 
-                // Step 2: Check if license exists in DB, if not - create it
-                licRow = await getOrValidateLicense(license_key);
-                
-                // If licRow is still null after getOrValidateLicense, try to create it from validation
-                // This can happen if validation succeeded but DB insert failed, or if tables are empty
-                if (!licRow && validation.valid) {
-                    console.log(`📝 License record not found in DB, creating from validation for ${license_key.substring(0, 8)}...`);
-                    const upsertSuccess = await upsertLicenseFromValidation(license_key, validation);
-                    
-                    if (!upsertSuccess) {
-                        console.error(`❌ Failed to upsert license record for ${license_key.substring(0, 8)}...`);
-                        return res.status(500).json({ 
-                            error: 'Internal server error: Failed to create license record. Please try again.' 
-                        });
-                    }
-                    
-                    // Wait a moment for DB to be ready, then try to load it again
-                    await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay
-                    
-                    // Try to load it again (with retry)
-                    let retries = 3;
-                    while (retries > 0 && !licRow) {
-                        const [newRows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
-                        licRow = newRows.length > 0 ? newRows[0] : null;
-                        if (licRow) {
-                            console.log(`✅ Successfully loaded license record after creation: plan_code=${licRow.plan_code}, status=${licRow.status}`);
-                            break;
-                        }
-                        retries--;
-                        if (retries > 0) {
-                            console.log(`⏳ Retrying to load license record... (${retries} attempts left)`);
-                            await new Promise(resolve => setTimeout(resolve, 200)); // 200ms delay between retries
-                        }
-                    }
-                }
-                
-                // If still no licRow, something went wrong
-                if (!licRow) {
-                    console.error(`❌ Failed to create/retrieve license record for ${license_key.substring(0, 8)}... even though validation succeeded and upsert returned success`);
-                    console.error(`   This might indicate a database connection or table structure issue.`);
-                    return res.status(500).json({ 
-                        error: 'Internal server error: Failed to create license record. Please try again.' 
-                    });
-                }
-                
-                // Check if user has free plan
+                // Check if user has free plan (should not reach here, but double-check)
                 if (licRow.plan_code === 'free' || licRow.plan_code === 'free_plan') {
                     console.log(`🚫 User has free plan - rejecting access for ${license_key.substring(0, 8)}...`);
                     return res.status(403).json({ 
@@ -1796,7 +1703,6 @@ app.post('/generate', async (req, res) => {
                 if (!['trialing','active'].includes(licRow.status)) {
                     return res.status(403).json({ error: 'Invalid or inactive license' });
                 }
-                
                 // Convert DB row to validation format for backward compatibility
                 validation = {
                     valid: true,
@@ -1822,125 +1728,52 @@ app.post('/generate', async (req, res) => {
         }
         
         // Step 2.5: If DB is configured, use DB-first enforcement (licenses/usage_month)
-        // At this point, licRow should already exist (created above if needed)
         if (dbPool && licRow) {
             // Reload licRow to ensure we have the latest plan_code from Freemius
             // This is critical for Premium users who just upgraded
             const [refreshedRows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
-            if (refreshedRows.length > 0) {
-                licRow = refreshedRows[0];
-            }
+            licRow = refreshedRows[0] || licRow;
             
             const planCode = licRow.plan_code || 'trial';
             console.log(`📋 License plan_code from DB: ${planCode}, status: ${licRow.status}`);
             const conn = await dbPool.getConnection();
             try {
                 await conn.beginTransaction();
-                
-                // Check 1: Verify license_key exists in licenses table (already verified above)
-                
-                // Get current month for usage table check
-                const month = new Date().toISOString().slice(0, 7);
-                
-                // Check 2: For trial users, verify post_id matches trial_post_id
-                // First check if license_key exists in licenses table and get trial_post_id
-                const [licenseCheck] = await conn.query(
-                    `SELECT trial_post_id, plan_code FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`,
-                    [license_key]
-                );
-                
-                const dbTrialPostId = licenseCheck.length > 0 ? licenseCheck[0].trial_post_id : null;
-                const dbPlanCode = licenseCheck.length > 0 ? licenseCheck[0].plan_code : planCode;
-                const isActuallyTrial = dbPlanCode === 'trial';
-                
-                // Check if usage record exists and get trial_post_id from usage table
-                const [usageRows] = await conn.query(
-                    `SELECT trial_post_id FROM \`${DB_TABLE_NAME}\` WHERE license_key=? AND month=?`,
-                    [license_key, month]
-                );
-                
-                const usageTrialPostId = usageRows.length > 0 ? usageRows[0].trial_post_id : null;
-                
+                // Only enforce trial restrictions if user is actually on trial plan
+                // Check plan_code only (status can be 'active' or 'trialing' for trial users)
+                // For Premium users, plan_code will be 'premium', 'professional', etc.
+                const isActuallyTrial = planCode === 'trial';
                 if (isActuallyTrial) {
-                    // If trial_post_id exists in licenses table, check it
-                    if (dbTrialPostId) {
-                        if (String(dbTrialPostId) !== String(effectivePostId)) {
-                            await conn.rollback();
-                            return res.status(402).json({ 
-                                error: 'ניצלת את הפוסט החינמי. נא לרכוש תכנית.',
-                                allowed_post_id: dbTrialPostId,
-                                requested_post_id: effectivePostId
-                            });
-                        }
-                    }
-                    
-                    // If trial_post_id exists in usage table, check it
-                    if (usageTrialPostId) {
-                        if (String(usageTrialPostId) !== String(effectivePostId)) {
-                            await conn.rollback();
-                            return res.status(402).json({ 
-                                error: 'ניצלת את הפוסט החינמי. נא לרכוש תכנית.',
-                                allowed_post_id: usageTrialPostId,
-                                requested_post_id: effectivePostId
-                            });
-                        }
-                    }
-                    
-                    // If no trial_post_id exists yet, set it in both tables
-                    if (!dbTrialPostId && !usageTrialPostId) {
-                        // This is the first time - set trial_post_id in licenses table
+                    if (!licRow.trial_post_id) {
                         await conn.query(`UPDATE \`${DB_LICENSES_TABLE}\` SET trial_post_id=? WHERE license_key=?`, [effectivePostId, license_key]);
-                        console.log(`✅ Set trial_post_id=${effectivePostId} in licenses table for ${license_key.substring(0, 8)}...`);
-                    } else if (dbTrialPostId && !usageTrialPostId) {
-                        // Sync usage table with licenses table
-                        await conn.query(
-                            `UPDATE \`${DB_TABLE_NAME}\` SET trial_post_id=? WHERE license_key=? AND month=?`,
-                            [dbTrialPostId, license_key, month]
-                        );
-                    } else if (!dbTrialPostId && usageTrialPostId) {
-                        // Sync licenses table with usage table
-                        await conn.query(`UPDATE \`${DB_LICENSES_TABLE}\` SET trial_post_id=? WHERE license_key=?`, [usageTrialPostId, license_key]);
+                    } else if (String(licRow.trial_post_id) !== String(effectivePostId)) {
+                        await conn.rollback();
+                        return res.status(402).json({ error: 'Trial locked to another post' });
                     }
                 }
-                
+                const month = new Date().toISOString().slice(0, 7);
                 await conn.query(`INSERT IGNORE INTO \`${DB_TABLE_NAME}\` (license_key, month) VALUES (?, ?)`, [license_key, month]);
                 const row = await jsonSearchPost(conn, license_key, month, effectivePostId);
                 const already = !!row && row.found !== null;
                 if (!already) {
                     // Use PLAN_POST_LIMITS constant, fallback to trial (1) if plan not found
-                    const limit = PLAN_POST_LIMITS[dbPlanCode] ?? PLAN_POST_LIMITS.trial;
+                    const limit = PLAN_POST_LIMITS[planCode] ?? PLAN_POST_LIMITS.trial;
                     // If row is null/undefined (first time), usedCount is 0
                     const usedCount = row ? (Number(row.posts_used_count) || 0) : 0;
-                    console.log(`📊 Quota check: plan=${dbPlanCode}, used=${usedCount}, limit=${limit}, limit_from_const=${PLAN_POST_LIMITS[dbPlanCode] !== undefined}, row_exists=${!!row}`);
+                    console.log(`📊 Quota check: plan=${planCode}, used=${usedCount}, limit=${limit}, limit_from_const=${PLAN_POST_LIMITS[planCode] !== undefined}, row_exists=${!!row}`);
                     
                     // Allow if usedCount is less than limit (0 < 1 for trial)
                     if (usedCount >= limit) {
                         await conn.rollback();
                         return res.status(402).json({ 
                             error: 'Monthly post quota exceeded for plan',
-                            plan: dbPlanCode,
+                            plan: planCode,
                             used: usedCount,
                             limit: limit
                         });
                     }
                     await appendPostUsed(conn, license_key, month, effectivePostId);
                 }
-                
-                // Update trial_post_id in usage table if it's a new trial user
-                if (isActuallyTrial) {
-                    const [updatedUsageRows] = await conn.query(
-                        `SELECT trial_post_id FROM \`${DB_TABLE_NAME}\` WHERE license_key=? AND month=?`,
-                        [license_key, month]
-                    );
-                    if (updatedUsageRows.length > 0 && !updatedUsageRows[0].trial_post_id) {
-                        await conn.query(
-                            `UPDATE \`${DB_TABLE_NAME}\` SET trial_post_id=? WHERE license_key=? AND month=?`,
-                            [effectivePostId, license_key, month]
-                        );
-                        console.log(`✅ Set trial_post_id=${effectivePostId} in usage table for ${license_key.substring(0, 8)}...`);
-                    }
-                }
-            
                 await conn.commit();
             } catch (e) {
                 try { await conn.rollback(); } catch(_) {}
@@ -1948,10 +1781,6 @@ app.post('/generate', async (req, res) => {
             } finally {
                 conn.release();
             }
-        } else if (dbPool && !licRow) {
-            // licRow is null but validation succeeded - this shouldn't happen after creation above
-            // But if it does, log it and continue with memory-only fallback
-            console.warn(`⚠️  Warning: licRow is null after validation for ${license_key.substring(0, 8)}..., using memory-only fallback`);
         }
 
         // Step 3: Get usage and check post-based limits (fallback memory)
@@ -1965,23 +1794,16 @@ app.post('/generate', async (req, res) => {
         
         console.log(`💳 User payment status: hasPaid=${hasPaid}, plan=${plan}, status=${licRow?.status}, plan_code=${licRow?.plan_code}`);
         
-        // Trial logic (אם אין תכנית בתשלום) - fallback for memory-only mode
+        // Trial logic (אם אין תכנית בתשלום)
         // Only apply trial restrictions if user is actually on trial plan
         if (!hasPaid) {
-            // Check 1: Verify license_key exists (already verified above)
-            // Check 2: Check if trial_post_id exists in usage and verify it matches
-            if (usage.trial_post_id) {
-                // If trial_post_id exists, verify it matches the requested post_id
-                if (String(effectivePostId) !== String(usage.trial_post_id)) {
-                    return res.status(402).json({ 
-                        error: 'ניצלת את הפוסט החינמי. נא לרכוש תכנית.',
-                        allowed_post_id: usage.trial_post_id,
-                        requested_post_id: effectivePostId
-                    });
-                }
-            } else {
-                // If no trial_post_id exists yet, set it (first time trial user)
+            if (!usage.trial_post_id) {
                 usage.trial_post_id = String(effectivePostId);
+            }
+            if (String(effectivePostId) !== usage.trial_post_id) {
+                return res.status(402).json({ 
+                    error: 'ניצלת את הפוסט החינמי. נא לרכוש תכנית.' 
+                });
             }
         }
         
