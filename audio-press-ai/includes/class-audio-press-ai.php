@@ -177,6 +177,11 @@ class Audio_Press_AI {
             wp_die(__('You do not have sufficient permissions to access this page.', 'audio-press-ai'));
         }
         
+        // Ensure constants are defined
+        if (!defined('AUDIO_PRESS_AI_API_URL')) {
+            wp_die(__('Plugin error: AUDIO_PRESS_AI_API_URL constant is not defined.', 'audio-press-ai'));
+        }
+        
         if (isset($_POST['submit'])) {
             check_admin_referer('audio_press_ai_settings');
             
@@ -206,7 +211,15 @@ class Audio_Press_AI {
         $voice = get_option('audio_press_ai_voice', 'nova');
         $auto_embed = get_option('audio_press_ai_auto_embed', '1');
         $auto_generate = get_option('audio_press_ai_auto_generate', '0');
-        $is_pro = $this->is_pro_user();
+        
+        // Safely check Pro status with error handling
+        try {
+            $is_pro = $this->is_pro_user();
+        } catch (Exception $e) {
+            error_log('Audio-Press AI: Error checking Pro status: ' . $e->getMessage());
+            $is_pro = false;
+        }
+        
         $dev_mode = defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true;
         
         ?>
@@ -335,7 +348,7 @@ class Audio_Press_AI {
             </form>
         </div>
         <script type="text/javascript">
-        jQuery(document).ready(function($) {
+        (function() {
             'use strict';
             
             // Define available voices for each language
@@ -388,13 +401,13 @@ class Audio_Press_AI {
             
             // Function to update voice options based on selected language
             function updateVoiceOptions() {
-                var $languageSelect = $('#audio-press-ai-test-language');
-                var $voiceSelect = $('#audio-press-ai-test-voice');
+                var $languageSelect = jQuery('#audio-press-ai-test-language');
+                var $voiceSelect = jQuery('#audio-press-ai-test-voice');
                 
                 // Check if elements exist
                 if (!$languageSelect.length || !$voiceSelect.length) {
                     console.error('Audio-Press AI: Voice select elements not found');
-                    return;
+                    return false;
                 }
                 
                 var selectedLang = $languageSelect.val() || 'en';
@@ -408,8 +421,8 @@ class Audio_Press_AI {
                 console.log('Audio-Press AI: Updating voice options for language:', selectedLang, 'voices:', voices);
                 
                 // Add options
-                $.each(voices, function(index, voice) {
-                    $voiceSelect.append($('<option>', {
+                jQuery.each(voices, function(index, voice) {
+                    $voiceSelect.append(jQuery('<option>', {
                         value: voice.value,
                         text: voice.label,
                         selected: index === 0 // Select first option by default
@@ -417,17 +430,42 @@ class Audio_Press_AI {
                 });
                 
                 console.log('Audio-Press AI: Voice options updated. Total options:', $voiceSelect.find('option').length);
+                return true;
             }
             
-            console.log('Audio-Press AI: Test script loaded');
+            // Function to wait for jQuery and DOM elements
+            function waitForElements(callback, maxAttempts) {
+                maxAttempts = maxAttempts || 50;
+                var attempts = 0;
+                
+                function check() {
+                    attempts++;
+                    if (typeof jQuery !== 'undefined' && jQuery('#audio-press-ai-test-language').length && jQuery('#audio-press-ai-test-voice').length) {
+                        callback();
+                    } else if (attempts < maxAttempts) {
+                        setTimeout(check, 100);
+                    } else {
+                        console.error('Audio-Press AI: Failed to find elements after ' + maxAttempts + ' attempts');
+                        // Try to initialize anyway
+                        if (typeof jQuery !== 'undefined') {
+                            callback();
+                        }
+                    }
+                }
+                
+                check();
+            }
             
-            // Wait a bit to ensure DOM is fully ready
-            setTimeout(function() {
+            // Initialize when everything is ready
+            waitForElements(function() {
+                var $ = jQuery;
+                console.log('Audio-Press AI: Test script loaded');
+                
                 // Initialize voice options for default language
                 updateVoiceOptions();
                 
                 // Update voice options when language changes
-                $('#audio-press-ai-test-language').on('change', function() {
+                jQuery('#audio-press-ai-test-language').on('change', function() {
                     updateVoiceOptions();
                 });
                 
@@ -456,12 +494,12 @@ class Audio_Press_AI {
                     console.log('Audio-Press AI: Test params - language:', language, 'voice:', voice, 'text length:', text.length);
                     
                     if (!text) {
-                        alert('<?php esc_js_e('Please enter test text', 'audio-press-ai'); ?>');
+                        alert('<?php echo esc_js(__('Please enter test text', 'audio-press-ai')); ?>');
                         return;
                     }
                     
                     $btn.prop('disabled', true);
-                    $status.html('<span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span><?php esc_js_e('Generating...', 'audio-press-ai'); ?>').show();
+                    $status.html('<span class="spinner is-active" style="float: none; margin: 0 5px 0 0;"></span><?php echo esc_js(__('Generating...', 'audio-press-ai')); ?>').show();
                     $resultRow.hide();
                     $player.empty();
                     
@@ -482,7 +520,7 @@ class Audio_Press_AI {
                     success: function(response) {
                         $btn.prop('disabled', false);
                         if (response.success) {
-                            $status.html('<span style="color: #00a32a;">✅ <?php esc_js_e('Success!', 'audio-press-ai'); ?></span>');
+                            $status.html('<span style="color: #00a32a;">✅ <?php echo esc_js(__('Success!', 'audio-press-ai')); ?></span>');
                             var audioUrl = response.data.audio_url;
                             var playerHtml = '<div class="audio-press-ai-custom-player">';
                             playerHtml += '<div class="player-controls">';
@@ -565,7 +603,7 @@ class Audio_Press_AI {
                             
                             audio.load();
                         } else {
-                            var errorMsg = response.data && response.data.message ? response.data.message : '<?php esc_js_e('Error', 'audio-press-ai'); ?>';
+                            var errorMsg = response.data && response.data.message ? response.data.message : '<?php echo esc_js(__('Error', 'audio-press-ai')); ?>';
                             var isLanguageMismatch = response.data && response.data.language_mismatch;
                             
                             // Show language mismatch with special styling
@@ -589,9 +627,9 @@ class Audio_Press_AI {
                                 $status.html('<div style="padding: 12px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; margin-top: 10px;">' +
                                     '<strong style="color: #856404; display: block; margin-bottom: 8px;">⚠️ ' + errorMsg + '</strong>' +
                                     '<p style="margin: 0; font-size: 13px; color: #856404;">' +
-                                    '<?php esc_js_e('The text appears to be in', 'audio-press-ai'); ?> <strong>' + detectedName + '</strong>, ' +
-                                    '<?php esc_js_e('but you selected', 'audio-press-ai'); ?> <strong>' + selectedName + '</strong>. ' +
-                                    '<?php esc_js_e('Language has been updated automatically. You can try again.', 'audio-press-ai'); ?>' +
+                                    '<?php echo esc_js(__('The text appears to be in', 'audio-press-ai')); ?> <strong>' + detectedName + '</strong>, ' +
+                                    '<?php echo esc_js(__('but you selected', 'audio-press-ai')); ?> <strong>' + selectedName + '</strong>. ' +
+                                    '<?php echo esc_js(__('Language has been updated automatically. You can try again.', 'audio-press-ai')); ?>' +
                                     '</p>' +
                                     '</div>');
                             } else {
@@ -602,15 +640,15 @@ class Audio_Press_AI {
                     error: function(xhr, status, error) {
                         $btn.prop('disabled', false);
                         console.error('Audio-Press AI Test Error:', status, error, xhr);
-                        var errorMsg = '<?php esc_js_e('Network error', 'audio-press-ai'); ?>';
+                        var errorMsg = '<?php echo esc_js(__('Network error', 'audio-press-ai')); ?>';
                         if (xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
                             errorMsg = xhr.responseJSON.data.message;
                         }
                         $status.html('<span style="color: #d63638;">❌ ' + errorMsg + '</span>');
                     }
                 });
-            }, 100); // Small delay to ensure DOM is ready
-        });
+            });
+        })();
         </script>
         <?php
     }
@@ -723,6 +761,17 @@ class Audio_Press_AI {
                                     <span class="time-total" id="audio-press-ai-time-total">0:00</span>
                                 </div>
                             </div>
+                            <div class="player-speed-control">
+                                <select id="audio-press-ai-speed-select" class="audio-speed-select" title="<?php esc_attr_e('Playback Speed', 'audio-press-ai'); ?>">
+                                    <option value="0.5">0.5x</option>
+                                    <option value="0.75">0.75x</option>
+                                    <option value="1" selected>1x</option>
+                                    <option value="1.25">1.25x</option>
+                                    <option value="1.5">1.5x</option>
+                                    <option value="1.75">1.75x</option>
+                                    <option value="2">2x</option>
+                                </select>
+                            </div>
                         </div>
                         <audio id="audio-press-ai-audio-element" preload="metadata">
                             <source src="<?php echo esc_url($audio_url); ?>" type="audio/wav">
@@ -755,6 +804,26 @@ class Audio_Press_AI {
                                 initExistingPlayer();
                             }
                         }, 100);
+                    }
+                    
+                    // Add speed control functionality
+                    var speedSelect = jQuery('#audio-press-ai-speed-select');
+                    if (speedSelect.length) {
+                        speedSelect.off('change').on('change', function() {
+                            var audio = jQuery('#audio-press-ai-audio-element')[0];
+                            if (audio) {
+                                var speed = parseFloat(jQuery(this).val());
+                                if (!isNaN(speed) && speed > 0) {
+                                    audio.playbackRate = speed;
+                                    console.log('Audio speed changed to:', speed + 'x');
+                                }
+                            }
+                        });
+                        // Set initial speed to 1x
+                        var audio = jQuery('#audio-press-ai-audio-element')[0];
+                        if (audio) {
+                            audio.playbackRate = 1;
+                        }
                     }
                 });
                 </script>
@@ -1788,6 +1857,17 @@ class Audio_Press_AI {
         $player_html .= '<span class="time-total" id="' . esc_attr($unique_id) . '-time-total">0:00</span>';
         $player_html .= '</div>';
         $player_html .= '</div>';
+        $player_html .= '<div class="player-speed-control">';
+        $player_html .= '<select id="' . esc_attr($unique_id) . '-speed-select" class="audio-speed-select" title="' . esc_attr__('Playback Speed', 'audio-press-ai') . '">';
+        $player_html .= '<option value="0.5">0.5x</option>';
+        $player_html .= '<option value="0.75">0.75x</option>';
+        $player_html .= '<option value="1" selected>1x</option>';
+        $player_html .= '<option value="1.25">1.25x</option>';
+        $player_html .= '<option value="1.5">1.5x</option>';
+        $player_html .= '<option value="1.75">1.75x</option>';
+        $player_html .= '<option value="2">2x</option>';
+        $player_html .= '</select>';
+        $player_html .= '</div>';
         $player_html .= '</div>';
         $player_html .= '<audio id="' . esc_attr($unique_id) . '-audio-element" preload="metadata">';
         $player_html .= '<source src="' . esc_url($audio_url) . '" type="audio/wav">';
@@ -1860,6 +1940,19 @@ class Audio_Press_AI {
         $player_html .= 'var percent = Math.max(0, Math.min(1, x / rect.width));';
         $player_html .= 'audio.currentTime = percent * audio.duration;';
         $player_html .= '});';
+        
+        $player_html .= 'var speedSelect = document.getElementById("' . esc_js($unique_id) . '-speed-select");';
+        $player_html .= 'if (speedSelect) {';
+        $player_html .= 'speedSelect.addEventListener("change", function() {';
+        $player_html .= 'var speed = parseFloat(this.value);';
+        $player_html .= 'if (!isNaN(speed) && speed > 0) {';
+        $player_html .= 'audio.playbackRate = speed;';
+        $player_html .= 'console.log("Audio speed changed to:", speed + "x");';
+        $player_html .= '}';
+        $player_html .= '});';
+        $player_html .= '// Set initial speed to 1x';
+        $player_html .= 'audio.playbackRate = 1;';
+        $player_html .= '}';
         
         $player_html .= 'audio.load();';
         $player_html .= '})();';

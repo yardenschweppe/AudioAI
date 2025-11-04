@@ -180,6 +180,17 @@ jQuery(document).ready(function($) {
         html += '<span class="time-total" id="audio-press-ai-time-total">0:00</span>';
         html += '</div>';
         html += '</div>';
+        html += '<div class="player-speed-control">';
+        html += '<select id="audio-press-ai-speed-select" class="audio-speed-select" title="Playback Speed">';
+        html += '<option value="0.5">0.5x</option>';
+        html += '<option value="0.75">0.75x</option>';
+        html += '<option value="1" selected>1x</option>';
+        html += '<option value="1.25">1.25x</option>';
+        html += '<option value="1.5">1.5x</option>';
+        html += '<option value="1.75">1.75x</option>';
+        html += '<option value="2">2x</option>';
+        html += '</select>';
+        html += '</div>';
         html += '</div>';
         html += '<audio id="audio-press-ai-audio-element" preload="metadata">';
         html += '<source src="' + audioUrl + '" type="audio/wav">';
@@ -257,6 +268,22 @@ jQuery(document).ready(function($) {
             audio.currentTime = percent * audio.duration;
         });
         
+        // Speed control
+        var speedSelect = $('#audio-press-ai-speed-select');
+        if (speedSelect.length) {
+            speedSelect.off('change').on('change', function() {
+                var speed = parseFloat($(this).val());
+                if (!isNaN(speed) && speed > 0) {
+                    audio.playbackRate = speed;
+                    console.log('Audio speed changed to:', speed + 'x');
+                }
+            });
+            // Set initial speed to 1x if not already set
+            if (!audio.playbackRate || audio.playbackRate === 1) {
+                audio.playbackRate = 1;
+            }
+        }
+        
         // Load audio metadata
         audio.load();
     }
@@ -328,6 +355,22 @@ jQuery(document).ready(function($) {
             var percent = Math.max(0, Math.min(1, x / rect.width));
             audio.currentTime = percent * audio.duration;
         });
+        
+        // Speed control
+        var speedSelect = $('#audio-press-ai-speed-select');
+        if (speedSelect.length) {
+            speedSelect.off('change').on('change', function() {
+                var speed = parseFloat($(this).val());
+                if (!isNaN(speed) && speed > 0) {
+                    audio.playbackRate = speed;
+                    console.log('Audio speed changed to:', speed + 'x');
+                }
+            });
+            // Set initial speed to 1x if not already set
+            if (!audio.playbackRate || audio.playbackRate === 1) {
+                audio.playbackRate = 1;
+            }
+        }
         
         // Load audio metadata
         audio.load();

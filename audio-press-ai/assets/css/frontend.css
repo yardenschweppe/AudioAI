@@ -137,6 +137,37 @@
     color: #999;
 }
 
+/* Speed control dropdown */
+.audio-press-ai-custom-player .player-speed-control {
+    flex-shrink: 0;
+    margin-left: 6px;
+}
+
+.audio-press-ai-custom-player .audio-speed-select {
+    padding: 3px 6px;
+    font-size: 10px;
+    line-height: 1.4;
+    border: 1px solid #d0d0d0;
+    border-radius: 3px;
+    background: #ffffff;
+    color: #2c2c2c;
+    cursor: pointer;
+    min-width: 50px;
+    height: 26px;
+    transition: all 0.2s ease;
+}
+
+.audio-press-ai-custom-player .audio-speed-select:hover {
+    border-color: #999;
+    background: #f5f5f5;
+}
+
+.audio-press-ai-custom-player .audio-speed-select:focus {
+    outline: none;
+    border-color: #2271b1;
+    box-shadow: 0 0 0 1px #2271b1;
+}
+
 /* Hidden audio element for actual playback */
 .audio-press-ai-custom-player audio {
     display: none;
