@@ -1278,9 +1278,32 @@ function splitIntoTwo(text, maxLen = MAX_CHARS_SPLIT_THRESHOLD) {
     
     // בחר את החיתוך הטוב ביותר (אבל לא פחות מ-maxLen)
     let cut = Math.max(leftCut, leftCut2);
-    if (cut < maxLen) cut = maxLen; // נפילת-גבול למקסימום
     
-    return [t.slice(0, cut).trim(), t.slice(cut).trim()];
+    // אם לא נמצא חיתוך נקי, או אם החיתוך יגרום לחלק ריק, נחזיר חלק אחד
+    if (cut < 0 || cut >= t.length) {
+        // אם הטקסט ארוך מ-maxLen אבל לא ניתן לפצל אותו, ננסה לפצל בכל זאת
+        // אבל רק אם זה באמת ארוך
+        if (t.length > maxLen) {
+            cut = Math.floor(t.length / 2);
+            // נחפש נקודה או רווח סביב האמצע (אפילו אם זה לא לפני האמצע)
+            const fallbackCut = t.lastIndexOf('.', cut) >= 0 ? t.lastIndexOf('.', cut) : 
+                                t.lastIndexOf(' ', cut) >= 0 ? t.lastIndexOf(' ', cut) : 
+                                cut;
+            cut = Math.max(fallbackCut, Math.floor(t.length * 0.4)); // לפחות 40% מהטקסט בחלק הראשון
+        } else {
+            return [t]; // לא צריך לפצל
+        }
+    }
+    
+    const part1 = t.slice(0, cut).trim();
+    const part2 = t.slice(cut).trim();
+    
+    // אם אחד החלקים ריק, נחזיר חלק אחד בלבד
+    if (!part1 || !part2) {
+        return [t];
+    }
+    
+    return [part1, part2];
 }
 
 /**
@@ -1298,71 +1321,92 @@ function runPiper(text, modelPath, outPath) {
         console.log(`🎙️  Running Piper: text_length=${textToProcess.length}, model=${path.basename(modelPath)}, output=${path.basename(outPath)}`);
         console.log(`   Text preview: "${textToProcess.substring(0, 100)}${textToProcess.length > 100 ? '...' : ''}"`);
         
-        const p = spawn(PIPER_BIN, ["-m", modelPath, "-f", outPath, "-q"], {
-            stdio: ["pipe", "ignore", "pipe"],
-        });
-
-        let err = "";
-        p.stderr.on("data", (d) => {
-            const errorMsg = d.toString();
-            err += errorMsg;
-            // Log stderr for debugging (Piper might output warnings here)
-            if (errorMsg.trim()) {
-                console.log(`   Piper stderr: ${errorMsg.trim()}`);
-            }
-        });
-
-        p.on("close", (code) => {
-            if (code === 0) {
-                console.log(`✅ Piper completed successfully for ${textToProcess.length} chars`);
-                resolve();
-            } else {
-                console.error(`❌ Piper exited with code ${code}, error: ${err || 'No error message'}`);
-                reject(new Error(err || `piper exited ${code}`));
-            }
-        });
-
-        // Write text to stdin and end it
-        // Piper expects text on stdin, terminated with newline
-        // CRITICAL: Piper reads ONLY until the first newline, so we must remove ALL newlines from the text!
+        // CRITICAL FIX: Piper doesn't read all text from stdin properly!
+        // Use a temporary input file instead of stdin
+        // This ensures Piper reads the ENTIRE text, not just a portion
+        const tempInputFile = path.join('/tmp', `piper_input_${Date.now()}_${Math.floor(Math.random()*1000000)}.txt`);
+        
         try {
-            // Remove ALL newlines from text (Piper stops at first \n)
-            const cleanedText = textToProcess.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+            // Clean the text (remove newlines, normalize spaces)
+            let cleanedText = textToProcess.replace(/\r?\n/g, ' '); // Replace newlines with spaces
+            cleanedText = cleanedText.replace(/[ \t]+/g, ' '); // Replace multiple spaces/tabs with single space
+            cleanedText = cleanedText.trim();
             
-            // Add newline at the end (Piper reads until newline)
-            const textWithNewline = cleanedText + '\n';
+            // Write text to temporary input file
+            fs.writeFileSync(tempInputFile, cleanedText, 'utf8');
             
-            console.log(`   Sending to Piper stdin: length=${textWithNewline.length} chars`);
-            console.log(`   Text has newlines: ${textToProcess.includes('\n') ? 'YES (REMOVED)' : 'NO'}`);
-            console.log(`   First 50 chars: "${textWithNewline.substring(0, 50)}..."`);
-            console.log(`   Last 50 chars: "...${textWithNewline.substring(Math.max(0, textWithNewline.length - 50))}"`);
+            console.log(`   📝 Using input file: ${tempInputFile}`);
+            console.log(`   📝 Text length: ${cleanedText.length} chars`);
+            console.log(`   📝 First 100 chars: "${cleanedText.substring(0, 100)}${cleanedText.length > 100 ? '...' : ''}"`);
+            console.log(`   📝 Last 100 chars: "...${cleanedText.substring(Math.max(0, cleanedText.length - 100))}"`);
             
-            // Use setImmediate to ensure the process is fully started before writing
-            setImmediate(() => {
-                try {
-                    // Write all at once - Piper should process the entire line
-                    const written = p.stdin.write(textWithNewline, 'utf8');
-                    
-                    if (!written) {
-                        // If buffer is full, wait for drain
-                        console.log(`   ⚠️  stdin buffer full, waiting for drain...`);
-                        p.stdin.once('drain', () => {
-                            console.log(`   ✅ stdin buffer drained, ending stream`);
-                            p.stdin.end();
-                        });
-                    } else {
-                        // All data written, end the stream
-                        console.log(`   ✅ All data written to stdin, ending stream`);
-                        p.stdin.end();
-                    }
-                } catch (writeError) {
-                    console.error(`   ❌ Error writing to stdin: ${writeError.message}`);
-                    reject(new Error(`Failed to write to piper stdin: ${writeError.message}`));
+            // Run Piper with input file instead of stdin
+            const p = spawn(PIPER_BIN, ["-m", modelPath, "-i", tempInputFile, "-f", outPath, "-q"], {
+                stdio: ["ignore", "pipe", "pipe"],
+            });
+
+            let err = "";
+            let out = "";
+            
+            p.stdout.on("data", (d) => {
+                out += d.toString();
+            });
+            
+            p.stderr.on("data", (d) => {
+                const errorMsg = d.toString();
+                err += errorMsg;
+                // Log stderr for debugging (Piper might output warnings here)
+                if (errorMsg.trim()) {
+                    console.log(`   Piper stderr: ${errorMsg.trim()}`);
                 }
             });
-        } catch (writeError) {
-            console.error(`   ❌ Error setting up stdin write: ${writeError.message}`);
-            reject(new Error(`Failed to set up stdin write: ${writeError.message}`));
+
+            p.on("close", (code) => {
+                // Clean up temporary input file
+                try {
+                    if (fs.existsSync(tempInputFile)) {
+                        fs.unlinkSync(tempInputFile);
+                    }
+                } catch (cleanupError) {
+                    console.warn(`   ⚠️  Could not delete temp input file: ${cleanupError.message}`);
+                }
+                
+                if (out.trim()) {
+                    console.log(`   Piper stdout: ${out.trim()}`);
+                }
+                
+                if (code === 0) {
+                    console.log(`✅ Piper completed successfully for ${textToProcess.length} chars`);
+                    
+                    // Check if output file was created and has reasonable size
+                    if (fs.existsSync(outPath)) {
+                        const outputSize = fs.statSync(outPath).size;
+                        console.log(`   Output file size: ${outputSize} bytes (${(outputSize / 1024).toFixed(2)} KB)`);
+                        
+                        if (outputSize < 1000) {
+                            console.warn(`   ⚠️  WARNING: Output file is suspiciously small for ${textToProcess.length} chars of input!`);
+                        }
+                    } else {
+                        console.error(`   ❌ Output file not created at ${outPath}`);
+                    }
+                    
+                    resolve();
+                } else {
+                    console.error(`❌ Piper exited with code ${code}, error: ${err || 'No error message'}`);
+                    reject(new Error(err || `piper exited ${code}`));
+                }
+            });
+        } catch (error) {
+            // Clean up temporary input file on error
+            try {
+                if (fs.existsSync(tempInputFile)) {
+                    fs.unlinkSync(tempInputFile);
+                }
+            } catch (cleanupError) {
+                // Ignore cleanup errors
+            }
+            console.error(`   ❌ Error setting up Piper: ${error.message}`);
+            reject(new Error(`Failed to set up Piper: ${error.message}`));
         }
     });
 }
@@ -1407,7 +1451,8 @@ async function synthToWav(text, modelPath, outFile) {
 }
 
 async function generateAudioWithPiper(text, hintLang) {
-    const { modelPath, language } = await getModelForLanguage(text, hintLang);
+        const { modelPath, language } = await getModelForLanguage(text, hintLang);
+    
     const tempFilePath = path.join('/tmp', `piper_out_${Date.now()}_${Math.floor(Math.random()*1000)}.wav`);
   
     try {
@@ -1731,6 +1776,7 @@ app.post('/generate', async (req, res) => {
         console.log(`📝 Normalized text: length=${normalizedText.length} (original: ${textToProcess.length})`);
         
         const { modelPath, language: chosenLanguage } = await getModelForLanguage(normalizedText, language || null);
+        
         const tempFilePath = path.join('/tmp', `piper_out_${Date.now()}_${Math.floor(Math.random()*1000)}.wav`);
         
         // Step 5: Schedule audio generation with concurrency control and timeout
@@ -1748,6 +1794,43 @@ app.post('/generate', async (req, res) => {
             });
             
             await schedule(job);
+            
+            // Check WAV file size before conversion
+            if (fs.existsSync(tempFilePath)) {
+                const wavSize = fs.statSync(tempFilePath).size;
+                const wavSizeKB = (wavSize / 1024).toFixed(2);
+                const wavSizeMB = (wavSize / (1024 * 1024)).toFixed(2);
+                console.log(`📊 WAV file created: ${wavSize} bytes (${wavSizeKB} KB / ${wavSizeMB} MB)`);
+                
+                // Calculate expected duration based on WAV properties
+                // WAV format: 16-bit PCM, mono, 22050 Hz = 44100 bytes per second
+                const expectedDuration = wavSize / 44100;
+                console.log(`📊 Expected duration based on WAV size: ${expectedDuration.toFixed(2)} seconds`);
+                
+                // Get actual duration using ffprobe
+                try {
+                    const ffprobeResult = spawnSync('ffprobe', [
+                        '-v', 'quiet',
+                        '-print_format', 'json',
+                        '-show_format',
+                        tempFilePath
+                    ], { encoding: 'utf8' });
+                    
+                    if (ffprobeResult.status === 0 && ffprobeResult.stdout) {
+                        const probeData = JSON.parse(ffprobeResult.stdout);
+                        if (probeData.format && probeData.format.duration) {
+                            console.log(`📊 Actual duration from ffprobe: ${parseFloat(probeData.format.duration).toFixed(2)} seconds`);
+                        }
+                    }
+                } catch (probeError) {
+                    console.log(`⚠️  Could not probe WAV duration: ${probeError.message}`);
+                }
+            } else {
+                console.error(`❌ WAV file not found at ${tempFilePath}`);
+                return res.status(500).json({
+                    error: 'Generated WAV file not found'
+                });
+            }
             
             // Convert WAV to MP3 using ffmpeg for better WordPress compatibility
             const mp3FilePath = tempFilePath.replace('.wav', '.mp3');
@@ -1810,6 +1893,31 @@ app.post('/generate', async (req, res) => {
             const wavSize = fs.statSync(tempFilePath).size;
             
             console.log(`✅ MP3 conversion successful: WAV=${(wavSize / 1024).toFixed(2)} KB → MP3=${(fileSize / 1024).toFixed(2)} KB`);
+            
+            // Get MP3 duration using ffprobe
+            try {
+                const ffprobeResult = spawnSync('ffprobe', [
+                    '-v', 'quiet',
+                    '-print_format', 'json',
+                    '-show_format',
+                    mp3FilePath
+                ], { encoding: 'utf8' });
+                
+                if (ffprobeResult.status === 0 && ffprobeResult.stdout) {
+                    const probeData = JSON.parse(ffprobeResult.stdout);
+                    if (probeData.format && probeData.format.duration) {
+                        const duration = parseFloat(probeData.format.duration);
+                        const minutes = Math.floor(duration / 60);
+                        const seconds = duration % 60;
+                        const timeFormat = minutes > 0 
+                            ? `${minutes}:${Math.floor(seconds).toString().padStart(2, '0')}`
+                            : `0:${seconds.toFixed(2).padStart(5, '0')}`;
+                        console.log(`📊 Final MP3 duration: ${duration.toFixed(2)} seconds (${timeFormat})`);
+                    }
+                }
+            } catch (probeError) {
+                console.log(`⚠️  Could not probe MP3 duration: ${probeError.message}`);
+            }
             
             // Check if file is suspiciously small
             if (fileSize < 1024) {
