@@ -777,13 +777,32 @@ class Audio_Press_AI {
         
         $is_pro = $this->is_pro_user();
         $dev_mode = defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true;
+        // Check if user has any license (including trial) or is connected to Freemius (Free plan)
+        // Allow button to be enabled if user is connected to Freemius, even if Free plan
+        $has_license = $this->get_license_key() !== false;
+        if (!$has_license && function_exists('apai_fs')) {
+            $fs = apai_fs();
+            // Check if user is connected to Freemius (has account) - even Free plan users should be able to use first post
+            if (is_callable(array($fs, 'is_registered'))) {
+                $has_license = $fs->is_registered();
+            } elseif (is_callable(array($fs, 'is_user_registered'))) {
+                $has_license = $fs->is_user_registered();
+            } elseif (method_exists($fs, '_get_user')) {
+                $user = $fs->_get_user();
+                $has_license = ($user !== false && $user !== null);
+            }
+        }
         ?>
         <div id="audio-press-ai-container" data-post-id="<?php echo esc_attr($post_id); ?>">
             <?php if (!$is_pro && !$dev_mode): ?>
                 <div style="padding: 10px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; margin-bottom: 10px;">
                     <p style="margin: 0; font-size: 12px;">
                         <strong><?php _e('Upgrade Required', 'audio-press-ai'); ?></strong><br>
-                        <?php _e('You need a Pro license to generate audio.', 'audio-press-ai'); ?>
+                        <?php if ($has_license): ?>
+                            <?php _e('You are on a trial/free plan. You can generate audio for your first post.', 'audio-press-ai'); ?>
+                        <?php else: ?>
+                            <?php _e('You need a Pro license to generate audio.', 'audio-press-ai'); ?>
+                        <?php endif; ?>
                     </p>
                     <?php if (function_exists('apai_fs')): ?>
                         <a href="<?php echo esc_url(apai_fs()->get_upgrade_url()); ?>" class="button button-primary" style="margin-top: 8px; width: 100%;">
@@ -863,7 +882,7 @@ class Audio_Press_AI {
                         <button type="button" 
                                 class="button button-secondary" 
                                 id="audio-press-ai-regenerate"
-                                <?php if (!$is_pro && !$dev_mode) echo 'disabled'; ?>>
+                                <?php if (!$has_license && !$dev_mode) echo 'disabled'; ?>>
                             <?php _e('Regenerate Audio', 'audio-press-ai'); ?>
                         </button>
                         <button type="button" 
@@ -931,7 +950,7 @@ class Audio_Press_AI {
                         class="button button-primary button-large" 
                         id="audio-press-ai-generate" 
                         style="width: 100%;"
-                        <?php if (!$is_pro && !(defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true)) echo 'disabled'; ?>>
+                        <?php if (!$has_license && !(defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true)) echo 'disabled'; ?>>
                     <?php _e('Generate Audio Version (AI)', 'audio-press-ai'); ?>
                 </button>
             <?php endif; ?>
@@ -991,9 +1010,23 @@ class Audio_Press_AI {
         }
         
         // Check Pro license (unless in dev mode)
+        // Allow Free plan users to use first post - server will validate
         if (!(defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true)) {
             if (!$this->is_pro_user()) {
-                wp_send_json_error(array('message' => __('Pro license required. Please upgrade.', 'audio-press-ai')));
+                // For Free plan users, check if they're connected to Freemius
+                $has_freemius_account = false;
+                if (function_exists('apai_fs')) {
+                    $fs = apai_fs();
+                    if (is_callable(array($fs, 'is_registered'))) {
+                        $has_freemius_account = $fs->is_registered();
+                    } elseif (method_exists($fs, '_get_user')) {
+                        $user = $fs->_get_user();
+                        $has_freemius_account = ($user !== false && $user !== null);
+                    }
+                }
+                if (!$has_freemius_account) {
+                    wp_send_json_error(array('message' => __('Pro license required. Please upgrade.', 'audio-press-ai')));
+                }
             }
         }
         
@@ -1003,7 +1036,22 @@ class Audio_Press_AI {
             if (defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true) {
                 $license_key = 'TEST';
             } else {
-                wp_send_json_error(array('message' => __('License key not found', 'audio-press-ai')));
+                // For Free plan users, create a unique license key based on Freemius user ID
+                if (function_exists('apai_fs')) {
+                    $fs = apai_fs();
+                    $user = null;
+                    if (method_exists($fs, '_get_user')) {
+                        $user = $fs->_get_user();
+                    }
+                    if ($user && isset($user->id)) {
+                        // Create a unique license key for Free plan users: FREE_{user_id}
+                        $license_key = 'FREE_' . $user->id;
+                    } else {
+                        wp_send_json_error(array('message' => __('License key not found. Please connect to Freemius.', 'audio-press-ai')));
+                    }
+                } else {
+                    wp_send_json_error(array('message' => __('License key not found', 'audio-press-ai')));
+                }
             }
         }
         
@@ -1540,9 +1588,23 @@ class Audio_Press_AI {
         }
         
         // Check Pro license (unless in dev mode)
+        // Allow Free plan users to use first post - server will validate
         if (!(defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true)) {
             if (!$this->is_pro_user()) {
-                wp_send_json_error(array('message' => __('Pro license required. Please upgrade.', 'audio-press-ai')));
+                // For Free plan users, check if they're connected to Freemius
+                $has_freemius_account = false;
+                if (function_exists('apai_fs')) {
+                    $fs = apai_fs();
+                    if (is_callable(array($fs, 'is_registered'))) {
+                        $has_freemius_account = $fs->is_registered();
+                    } elseif (method_exists($fs, '_get_user')) {
+                        $user = $fs->_get_user();
+                        $has_freemius_account = ($user !== false && $user !== null);
+                    }
+                }
+                if (!$has_freemius_account) {
+                    wp_send_json_error(array('message' => __('Pro license required. Please upgrade.', 'audio-press-ai')));
+                }
             }
         }
         
@@ -1552,7 +1614,22 @@ class Audio_Press_AI {
             if (defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true) {
                 $license_key = 'TEST';
             } else {
-                wp_send_json_error(array('message' => __('License key not found', 'audio-press-ai')));
+                // For Free plan users, create a unique license key based on Freemius user ID
+                if (function_exists('apai_fs')) {
+                    $fs = apai_fs();
+                    $user = null;
+                    if (method_exists($fs, '_get_user')) {
+                        $user = $fs->_get_user();
+                    }
+                    if ($user && isset($user->id)) {
+                        // Create a unique license key for Free plan users: FREE_{user_id}
+                        $license_key = 'FREE_' . $user->id;
+                    } else {
+                        wp_send_json_error(array('message' => __('License key not found. Please connect to Freemius.', 'audio-press-ai')));
+                    }
+                } else {
+                    wp_send_json_error(array('message' => __('License key not found', 'audio-press-ai')));
+                }
             }
         }
         
