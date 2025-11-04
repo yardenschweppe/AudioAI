@@ -335,7 +335,7 @@ class Audio_Press_AI {
             </form>
         </div>
         <script type="text/javascript">
-        (function($) {
+        jQuery(document).ready(function($) {
             'use strict';
             
             // Define available voices for each language
@@ -390,13 +390,22 @@ class Audio_Press_AI {
             function updateVoiceOptions() {
                 var $languageSelect = $('#audio-press-ai-test-language');
                 var $voiceSelect = $('#audio-press-ai-test-voice');
-                var selectedLang = $languageSelect.val();
+                
+                // Check if elements exist
+                if (!$languageSelect.length || !$voiceSelect.length) {
+                    console.error('Audio-Press AI: Voice select elements not found');
+                    return;
+                }
+                
+                var selectedLang = $languageSelect.val() || 'en';
                 
                 // Clear existing options
                 $voiceSelect.empty();
                 
                 // Get voices for selected language
                 var voices = languageVoices[selectedLang] || [{ value: 'default', label: 'Default' }];
+                
+                console.log('Audio-Press AI: Updating voice options for language:', selectedLang, 'voices:', voices);
                 
                 // Add options
                 $.each(voices, function(index, voice) {
@@ -406,11 +415,14 @@ class Audio_Press_AI {
                         selected: index === 0 // Select first option by default
                     }));
                 });
+                
+                console.log('Audio-Press AI: Voice options updated. Total options:', $voiceSelect.find('option').length);
             }
             
-            $(document).ready(function() {
-                console.log('Audio-Press AI: Test script loaded');
-                
+            console.log('Audio-Press AI: Test script loaded');
+            
+            // Wait a bit to ensure DOM is fully ready
+            setTimeout(function() {
                 // Initialize voice options for default language
                 updateVoiceOptions();
                 
@@ -597,8 +609,8 @@ class Audio_Press_AI {
                         $status.html('<span style="color: #d63638;">❌ ' + errorMsg + '</span>');
                     }
                 });
-            });
-        })(jQuery);
+            }, 100); // Small delay to ensure DOM is ready
+        });
         </script>
         <?php
     }
