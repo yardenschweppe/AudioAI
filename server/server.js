@@ -1739,19 +1739,62 @@ app.post('/generate', async (req, res) => {
             const conn = await dbPool.getConnection();
             try {
                 await conn.beginTransaction();
-                // Only enforce trial restrictions if user is actually on trial plan
-                // Check plan_code only (status can be 'active' or 'trialing' for trial users)
-                // For Premium users, plan_code will be 'premium', 'professional', etc.
+                
+                // Check 1: Verify license_key exists in licenses table (already verified above)
+                
+                // Get current month for usage table check
+                const month = new Date().toISOString().slice(0, 7);
+                
+                // Check 2: For trial users, verify post_id matches trial_post_id
                 const isActuallyTrial = planCode === 'trial';
                 if (isActuallyTrial) {
-                    if (!licRow.trial_post_id) {
+                    // Check if usage record exists and get trial_post_id from usage table
+                    const [usageRows] = await conn.query(
+                        `SELECT trial_post_id FROM \`${DB_TABLE_NAME}\` WHERE license_key=? AND month=?`,
+                        [license_key, month]
+                    );
+                    
+                    const usageTrialPostId = usageRows.length > 0 ? usageRows[0].trial_post_id : null;
+                    
+                    // If trial_post_id exists in licenses table, check it
+                    if (licRow.trial_post_id) {
+                        if (String(licRow.trial_post_id) !== String(effectivePostId)) {
+                            await conn.rollback();
+                            return res.status(402).json({ 
+                                error: 'ניצלת את הפוסט החינמי. נא לרכוש תכנית.',
+                                allowed_post_id: licRow.trial_post_id,
+                                requested_post_id: effectivePostId
+                            });
+                        }
+                    }
+                    
+                    // If trial_post_id exists in usage table, check it
+                    if (usageTrialPostId) {
+                        if (String(usageTrialPostId) !== String(effectivePostId)) {
+                            await conn.rollback();
+                            return res.status(402).json({ 
+                                error: 'ניצלת את הפוסט החינמי. נא לרכוש תכנית.',
+                                allowed_post_id: usageTrialPostId,
+                                requested_post_id: effectivePostId
+                            });
+                        }
+                    }
+                    
+                    // If no trial_post_id exists yet, set it in both tables
+                    if (!licRow.trial_post_id && !usageTrialPostId) {
                         await conn.query(`UPDATE \`${DB_LICENSES_TABLE}\` SET trial_post_id=? WHERE license_key=?`, [effectivePostId, license_key]);
-                    } else if (String(licRow.trial_post_id) !== String(effectivePostId)) {
-                        await conn.rollback();
-                        return res.status(402).json({ error: 'Trial locked to another post' });
+                        // Will be set in usage table below when we create/update the usage record
+                    } else if (licRow.trial_post_id && !usageTrialPostId) {
+                        // Sync usage table with licenses table
+                        await conn.query(
+                            `UPDATE \`${DB_TABLE_NAME}\` SET trial_post_id=? WHERE license_key=? AND month=?`,
+                            [licRow.trial_post_id, license_key, month]
+                        );
+                    } else if (!licRow.trial_post_id && usageTrialPostId) {
+                        // Sync licenses table with usage table
+                        await conn.query(`UPDATE \`${DB_LICENSES_TABLE}\` SET trial_post_id=? WHERE license_key=?`, [usageTrialPostId, license_key]);
                     }
                 }
-                const month = new Date().toISOString().slice(0, 7);
                 await conn.query(`INSERT IGNORE INTO \`${DB_TABLE_NAME}\` (license_key, month) VALUES (?, ?)`, [license_key, month]);
                 const row = await jsonSearchPost(conn, license_key, month, effectivePostId);
                 const already = !!row && row.found !== null;
@@ -1774,6 +1817,21 @@ app.post('/generate', async (req, res) => {
                     }
                     await appendPostUsed(conn, license_key, month, effectivePostId);
                 }
+                
+                // Update trial_post_id in usage table if it's a new trial user
+                if (isActuallyTrial) {
+                    const [updatedUsageRows] = await conn.query(
+                        `SELECT trial_post_id FROM \`${DB_TABLE_NAME}\` WHERE license_key=? AND month=?`,
+                        [license_key, month]
+                    );
+                    if (updatedUsageRows.length > 0 && !updatedUsageRows[0].trial_post_id) {
+                        await conn.query(
+                            `UPDATE \`${DB_TABLE_NAME}\` SET trial_post_id=? WHERE license_key=? AND month=?`,
+                            [effectivePostId, license_key, month]
+                        );
+                    }
+                }
+                
                 await conn.commit();
             } catch (e) {
                 try { await conn.rollback(); } catch(_) {}
@@ -1794,16 +1852,23 @@ app.post('/generate', async (req, res) => {
         
         console.log(`💳 User payment status: hasPaid=${hasPaid}, plan=${plan}, status=${licRow?.status}, plan_code=${licRow?.plan_code}`);
         
-        // Trial logic (אם אין תכנית בתשלום)
+        // Trial logic (אם אין תכנית בתשלום) - fallback for memory-only mode
         // Only apply trial restrictions if user is actually on trial plan
         if (!hasPaid) {
-            if (!usage.trial_post_id) {
+            // Check 1: Verify license_key exists (already verified above)
+            // Check 2: Check if trial_post_id exists in usage and verify it matches
+            if (usage.trial_post_id) {
+                // If trial_post_id exists, verify it matches the requested post_id
+                if (String(effectivePostId) !== String(usage.trial_post_id)) {
+                    return res.status(402).json({ 
+                        error: 'ניצלת את הפוסט החינמי. נא לרכוש תכנית.',
+                        allowed_post_id: usage.trial_post_id,
+                        requested_post_id: effectivePostId
+                    });
+                }
+            } else {
+                // If no trial_post_id exists yet, set it (first time trial user)
                 usage.trial_post_id = String(effectivePostId);
-            }
-            if (String(effectivePostId) !== usage.trial_post_id) {
-                return res.status(402).json({ 
-                    error: 'ניצלת את הפוסט החינמי. נא לרכוש תכנית.' 
-                });
             }
         }
         
