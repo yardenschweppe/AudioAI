@@ -1699,6 +1699,8 @@ app.post('/generate', async (req, res) => {
                         });
                     } else if (licenseExists && usageExists) {
                         // Step 4: Both exist - check if post_id matches
+                        // For new WordPress users (WP_*), allow them to use any post_id for their first post
+                        const isNewWordPressUser = license_key.startsWith('WP_');
                         let postIdMatches = false;
                         
                         if (usageRow && usageRow.posts_used) {
@@ -1725,8 +1727,47 @@ app.post('/generate', async (req, res) => {
                             postIdMatches = String(usageRow.post_id) === String(effectivePostId);
                         }
                         
+                        // For new WordPress users, if posts_used is empty or has only one item, allow them to use any post_id
+                        if (!postIdMatches && isNewWordPressUser) {
+                            try {
+                                const postsUsedStr = typeof usageRow.posts_used === 'string' 
+                                    ? usageRow.posts_used 
+                                    : JSON.stringify(usageRow.posts_used || []);
+                                const postsUsed = JSON.parse(postsUsedStr);
+                                const postsUsedCount = Array.isArray(postsUsed) ? postsUsed.length : (postsUsed ? 1 : 0);
+                                const usageCount = usageRow.posts_used_count || 0;
+                                
+                                // For new WordPress users, always allow first post regardless of post_id
+                                // This handles race conditions where user was created with different post_id
+                                if (postsUsedCount === 0 || (postsUsedCount <= 1 && usageCount <= 1)) {
+                                    console.log(`✅ New WordPress user - allowing first post: ${license_key.substring(0, 8)}... post_id ${effectivePostId} (previous: ${JSON.stringify(postsUsed)})`);
+                                    // Update the posts_used to include this post_id (replace if empty or single item)
+                                    const month = new Date().toISOString().slice(0, 7);
+                                    const updatedPostsUsed = [String(effectivePostId)]; // Always use current post_id for first post
+                                    return dbPool.query(
+                                        `UPDATE \`${DB_TABLE_NAME}\` SET posts_used=?, posts_used_count=? WHERE license_key=? AND month=?`,
+                                        [JSON.stringify(updatedPostsUsed), 1, license_key, month]
+                                    ).then(() => {
+                                        // Also update trial_post_id to current post_id
+                                        return dbPool.query(
+                                            `UPDATE \`${DB_LICENSES_TABLE}\` SET trial_post_id=? WHERE license_key=?`,
+                                            [String(effectivePostId), license_key]
+                                        );
+                                    }).then(() => {
+                                        // Mark as matched so we don't throw error
+                                        postIdMatches = true;
+                                        console.log(`✅ Updated new WordPress user with post_id ${effectivePostId}`);
+                                        return Promise.resolve();
+                                    });
+                                }
+                            } catch (err) {
+                                console.error(`Error checking new user posts: ${err.message}`);
+                            }
+                        }
+                        
                         if (!postIdMatches) {
                             console.log(`❌ Post ID ${effectivePostId} does NOT match for license ${license_key.substring(0, 8)}...`);
+                            console.log(`   Usage row: ${JSON.stringify(usageRow)}`);
                             if (!res.headersSent) {
                                 res.status(403).json({ 
                                     error: `Post ID ${effectivePostId} does not match the post ID associated with this license` 

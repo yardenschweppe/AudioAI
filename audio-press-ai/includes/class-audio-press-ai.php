@@ -950,12 +950,18 @@ class Audio_Press_AI {
      * AJAX handler for generating audio
      */
     public function ajax_generate_audio() {
+        // Prevent any output before JSON response
+        if (ob_get_level()) {
+            ob_clean();
+        }
+        
         // Verify nonce
         check_ajax_referer('audio_press_ai_meta_box', 'nonce');
         
         // Check user capabilities
         if (!current_user_can('edit_posts')) {
             wp_send_json_error(array('message' => __('Insufficient permissions', 'audio-press-ai')));
+            return; // Ensure we exit
         }
         
         // Validate and sanitize post ID
@@ -1570,12 +1576,18 @@ class Audio_Press_AI {
      * AJAX handler for test audio generation (from settings page)
      */
     public function ajax_test_generate() {
+        // Prevent any output before JSON response
+        if (ob_get_level()) {
+            ob_clean();
+        }
+        
         // Verify nonce
         check_ajax_referer('audio_press_ai_test', 'nonce');
         
         // Check user capabilities
         if (!current_user_can('manage_options')) {
             wp_send_json_error(array('message' => __('Insufficient permissions', 'audio-press-ai')));
+            return; // Ensure we exit
         }
         
         // Get license key - validation happens on server side
@@ -2179,6 +2191,16 @@ class Audio_Press_AI {
      * Auto-generate audio when post is published
      */
     public function maybe_auto_generate_audio($post_id, $post) {
+        // Don't run on REST API requests (Gutenberg editor) - this can cause JSON response issues
+        if (defined('REST_REQUEST') && REST_REQUEST) {
+            return;
+        }
+        
+        // Don't run on AJAX requests
+        if (defined('DOING_AJAX') && DOING_AJAX) {
+            return;
+        }
+        
         // Check if auto-generate is enabled
         $auto_generate = get_option('audio_press_ai_auto_generate', '0');
         if (!$auto_generate) {
