@@ -1656,6 +1656,127 @@ app.post('/generate', async (req, res) => {
             return res.status(429).json({ error: 'Too many requests, slow down.' });
         }
         
+        // Step 1.5: Check license and post_id in database tables (licenses and audio_usage)
+        // Using promises (.then()) instead of await to wait for definitive response
+        if (dbPool) {
+            // Step 1: Check if license_key exists in licenses table
+            dbPool.query(
+                `SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key = ?`,
+                [license_key]
+            ).then(([licenseRows]) => {
+                const licenseExists = licenseRows && licenseRows.length > 0;
+                
+                // Step 2: Check if license_key exists in audio_usage table
+                return dbPool.query(
+                    `SELECT * FROM \`${DB_TABLE_NAME}\` WHERE license_key = ? ORDER BY created_at DESC LIMIT 1`,
+                    [license_key]
+                ).then(([usageRows]) => {
+                    const usageExists = usageRows && usageRows.length > 0;
+                    const usageRow = usageRows && usageRows[0] || null;
+                    
+                    // Step 3: If user doesn't exist in either table, add to both
+                    if (!licenseExists && !usageExists) {
+                        console.log(`📝 New user detected: ${license_key.substring(0, 8)}... - Adding to licenses and ${DB_TABLE_NAME} tables`);
+                        
+                        // Add to licenses table with default values
+                        dbPool.query(
+                            `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, trial_post_id, validated_at) VALUES (?, ?, ?, ?, ?, NOW())`,
+                            [license_key, 'trial', 'trialing', 'monthly', String(effectivePostId)]
+                        ).catch(err => console.error('Error inserting into licenses:', err.message));
+                        
+                        // Add to audio_usage table with current month and post_id
+                        const month = new Date().toISOString().slice(0, 7);
+                        return dbPool.query(
+                            `INSERT INTO \`${DB_TABLE_NAME}\` (license_key, month, posts_used, posts_used_count) VALUES (?, ?, JSON_ARRAY(?), ?)`,
+                            [license_key, month, String(effectivePostId), 1]
+                        );
+                    } else if (licenseExists && usageExists) {
+                        // Step 4: Both exist - check if post_id matches
+                        let postIdMatches = false;
+                        
+                        if (usageRow && usageRow.posts_used) {
+                            try {
+                                const postsUsedStr = typeof usageRow.posts_used === 'string' 
+                                    ? usageRow.posts_used 
+                                    : JSON.stringify(usageRow.posts_used);
+                                
+                                if (postsUsedStr && postsUsedStr.trim() !== '' && postsUsedStr !== 'null') {
+                                    const postsUsed = JSON.parse(postsUsedStr);
+                                    if (Array.isArray(postsUsed)) {
+                                        postIdMatches = postsUsed.includes(String(effectivePostId)) || postsUsed.includes(Number(effectivePostId));
+                                    } else if (typeof postsUsed === 'string') {
+                                        postIdMatches = postsUsed === String(effectivePostId);
+                                    }
+                                }
+                            } catch (jsonError) {
+                                console.error(`Error parsing posts_used JSON: ${jsonError.message}`);
+                            }
+                        }
+                        
+                        // Also check if there's a post_id column (for simpler structure)
+                        if (!postIdMatches && usageRow && usageRow.post_id) {
+                            postIdMatches = String(usageRow.post_id) === String(effectivePostId);
+                        }
+                        
+                        if (!postIdMatches) {
+                            console.log(`❌ Post ID ${effectivePostId} does NOT match for license ${license_key.substring(0, 8)}...`);
+                            if (!res.headersSent) {
+                                res.status(403).json({ 
+                                    error: `Post ID ${effectivePostId} does not match the post ID associated with this license` 
+                                });
+                            }
+                            throw new Error('Post ID mismatch');
+                        }
+                        
+                        console.log(`✅ Post ID ${effectivePostId} matches for license ${license_key.substring(0, 8)}...`);
+                        return Promise.resolve();
+                    } else if (licenseExists && !usageExists) {
+                        // License exists but not in usage - add to usage
+                        console.log(`📝 License exists but not in usage table: ${license_key.substring(0, 8)}... - Adding to ${DB_TABLE_NAME}`);
+                        const month = new Date().toISOString().slice(0, 7);
+                        return dbPool.query(
+                            `INSERT INTO \`${DB_TABLE_NAME}\` (license_key, month, posts_used, posts_used_count) VALUES (?, ?, JSON_ARRAY(?), ?)`,
+                            [license_key, month, String(effectivePostId), 1]
+                        );
+                    } else if (!licenseExists && usageExists) {
+                        // Usage exists but not in license - add to license
+                        console.log(`📝 Usage exists but not in licenses table: ${license_key.substring(0, 8)}... - Adding to licenses`);
+                        return dbPool.query(
+                            `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, trial_post_id, validated_at) VALUES (?, ?, ?, ?, ?, NOW())`,
+                            [license_key, 'trial', 'trialing', 'monthly', String(effectivePostId)]
+                        );
+                    }
+                    return Promise.resolve();
+                });
+            }).then(async () => {
+                // Continue with the rest of the request
+                await continueRequest();
+            }).catch((err) => {
+                if (err.message === 'Post ID mismatch') {
+                    // Error already handled (response sent)
+                    return;
+                }
+                console.error('Error in license/post_id check:', err.message);
+                // Continue with request on error (don't block)
+                continueRequest().catch(continueErr => {
+                    console.error('Error in continueRequest:', continueErr);
+                    if (!res.headersSent) {
+                        res.status(500).json({ error: continueErr.message || 'Internal server error' });
+                    }
+                });
+            });
+        } else {
+            // No DB - continue immediately
+            continueRequest().catch(err => {
+                console.error('Error in continueRequest:', err);
+                if (!res.headersSent) {
+                    res.status(500).json({ error: err.message || 'Internal server error' });
+                }
+            });
+        }
+        
+        async function continueRequest() {
+        
         // Step 2: Validate license with Freemius (או מצב בדיקה)
         // Always validate with Freemius to ensure plan_code is up-to-date
         const isTestKey = license_key === 'TEST' || license_key === TEST_LICENSE_KEY;
@@ -2042,6 +2163,7 @@ app.post('/generate', async (req, res) => {
                 fs.unlink(mp3FilePath, () => {});
             }
         }
+        } // End of continueRequest function
         
     } catch (error) {
         console.error('Error in /generate:', error);
