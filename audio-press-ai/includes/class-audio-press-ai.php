@@ -1095,9 +1095,40 @@ class Audio_Press_AI {
                     wp_send_json_error(array('message' => __('Please connect to the audio generation service first.', 'audio-press-ai')));
                 }
                 
-                // If connected but no license key, they might be on free plan
-                // Let the server handle validation - it will reject if needed
-                wp_send_json_error(array('message' => __('License key not found. Please check your subscription status.', 'audio-press-ai')));
+                // If connected but no license key, user might be trial user without license key yet
+                // Try to get user ID or install key from Freemius as fallback
+                // The server will validate with Freemius and create the license record if valid
+                $user_id = get_current_user_id();
+                $wp_user = get_userdata($user_id);
+                
+                // Try to get install key or user key from Freemius
+                $install_key = null;
+                $user_key = null;
+                
+                if (is_callable(array($fs, 'get_site'))) {
+                    $site = $fs->get_site();
+                    if ($site && isset($site->secret_key)) {
+                        $install_key = $site->secret_key;
+                    }
+                }
+                
+                if (is_callable(array($fs, 'get_user'))) {
+                    $user = $fs->get_user();
+                    if ($user && isset($user->secret_key)) {
+                        $user_key = $user->secret_key;
+                    }
+                }
+                
+                // If we have install key or user key, use it temporarily
+                // Server will validate with Freemius and create proper license record
+                if ($install_key) {
+                    $license_key = $install_key;
+                } elseif ($user_key) {
+                    $license_key = $user_key;
+                } else {
+                    // No license key available - user needs to connect properly
+                    wp_send_json_error(array('message' => __('License key not found. Please connect to the audio generation service through Freemius.', 'audio-press-ai')));
+                }
             }
         }
         
