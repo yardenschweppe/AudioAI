@@ -903,19 +903,66 @@ async function upsertLicenseFromValidation(licenseKey, validation) {
         const is_test = (TEST_MODE || licenseKey === 'TEST' || licenseKey === TEST_LICENSE_KEY) && !isRealFreemiusLicense ? 1 : 0;
         
         const next_renewal_at = lic.next_bill_at ? new Date(lic.next_bill_at) : (lic.expires ? new Date(lic.expires * 1000) : null);
+        
+        // Extract Freemius IDs
+        const freemius_user_id = lic.user_id || validation.user_id || null;
+        const freemius_license_id = lic.id || lic.license_id || validation.license_id || null;
 
-        await dbPool.query(
-            `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, is_test, validated_at, next_renewal_at)
-             VALUES (?, ?, ?, ?, ?, NOW(), ?)
-             ON DUPLICATE KEY UPDATE
-               plan_code=VALUES(plan_code),
-               status=VALUES(status),
-               period=VALUES(period),
-               is_test=VALUES(is_test),
-               validated_at=VALUES(validated_at),
-               next_renewal_at=VALUES(next_renewal_at)`,
-            [licenseKey, plan_code, status, period, is_test, next_renewal_at]
-        );
+        // Check if freemius_user_id and freemius_license_id columns exist
+        let hasFreemiusColumns = false;
+        try {
+            const [columns] = await dbPool.query(`SHOW COLUMNS FROM \`${DB_LICENSES_TABLE}\` LIKE 'freemius_user_id'`);
+            hasFreemiusColumns = columns.length > 0;
+        } catch (e) {
+            // Ignore - will try to add columns if needed
+        }
+        
+        // If columns don't exist, try to add them
+        if (!hasFreemiusColumns) {
+            try {
+                await dbPool.query(`ALTER TABLE \`${DB_LICENSES_TABLE}\` ADD COLUMN \`freemius_user_id\` BIGINT DEFAULT NULL`);
+                await dbPool.query(`ALTER TABLE \`${DB_LICENSES_TABLE}\` ADD COLUMN \`freemius_license_id\` BIGINT DEFAULT NULL`);
+                console.log(`✅ Added freemius_user_id and freemius_license_id columns to licenses table`);
+                hasFreemiusColumns = true;
+            } catch (alterError) {
+                console.log(`⚠️  Could not add Freemius ID columns (they may already exist): ${alterError.message}`);
+                // Continue anyway - these columns are optional
+            }
+        }
+
+        // Build INSERT query with optional Freemius ID columns
+        if (hasFreemiusColumns) {
+            await dbPool.query(
+                `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, is_test, validated_at, next_renewal_at, freemius_user_id, freemius_license_id)
+                 VALUES (?, ?, ?, ?, ?, NOW(), ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                   plan_code=VALUES(plan_code),
+                   status=VALUES(status),
+                   period=VALUES(period),
+                   is_test=VALUES(is_test),
+                   validated_at=VALUES(validated_at),
+                   next_renewal_at=VALUES(next_renewal_at),
+                   freemius_user_id=VALUES(freemius_user_id),
+                   freemius_license_id=VALUES(freemius_license_id)`,
+                [licenseKey, plan_code, status, period, is_test, next_renewal_at, freemius_user_id, freemius_license_id]
+            );
+        } else {
+            // Fallback if columns don't exist
+            await dbPool.query(
+                `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, is_test, validated_at, next_renewal_at)
+                 VALUES (?, ?, ?, ?, ?, NOW(), ?)
+                 ON DUPLICATE KEY UPDATE
+                   plan_code=VALUES(plan_code),
+                   status=VALUES(status),
+                   period=VALUES(period),
+                   is_test=VALUES(is_test),
+                   validated_at=VALUES(validated_at),
+                   next_renewal_at=VALUES(next_renewal_at)`,
+                [licenseKey, plan_code, status, period, is_test, next_renewal_at]
+            );
+        }
+        
+        console.log(`✅ License upserted successfully: ${licenseKey.substring(0, 8)}... (plan=${plan_code}, status=${status})`);
         return true;
     } catch (e) {
         console.error('Error upserting license:', e.message);
@@ -1697,18 +1744,42 @@ app.post('/generate', async (req, res) => {
                 licRow = await getOrValidateLicense(license_key);
                 
                 // If licRow is still null after getOrValidateLicense, try to create it from validation
-                // This can happen if validation succeeded but DB insert failed
+                // This can happen if validation succeeded but DB insert failed, or if tables are empty
                 if (!licRow && validation.valid) {
                     console.log(`📝 License record not found in DB, creating from validation for ${license_key.substring(0, 8)}...`);
-                    await upsertLicenseFromValidation(license_key, validation);
-                    // Try to load it again
-                    const [newRows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
-                    licRow = newRows.length > 0 ? newRows[0] : null;
+                    const upsertSuccess = await upsertLicenseFromValidation(license_key, validation);
+                    
+                    if (!upsertSuccess) {
+                        console.error(`❌ Failed to upsert license record for ${license_key.substring(0, 8)}...`);
+                        return res.status(500).json({ 
+                            error: 'Internal server error: Failed to create license record. Please try again.' 
+                        });
+                    }
+                    
+                    // Wait a moment for DB to be ready, then try to load it again
+                    await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay
+                    
+                    // Try to load it again (with retry)
+                    let retries = 3;
+                    while (retries > 0 && !licRow) {
+                        const [newRows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
+                        licRow = newRows.length > 0 ? newRows[0] : null;
+                        if (licRow) {
+                            console.log(`✅ Successfully loaded license record after creation: plan_code=${licRow.plan_code}, status=${licRow.status}`);
+                            break;
+                        }
+                        retries--;
+                        if (retries > 0) {
+                            console.log(`⏳ Retrying to load license record... (${retries} attempts left)`);
+                            await new Promise(resolve => setTimeout(resolve, 200)); // 200ms delay between retries
+                        }
+                    }
                 }
                 
                 // If still no licRow, something went wrong
                 if (!licRow) {
-                    console.error(`❌ Failed to create/retrieve license record for ${license_key.substring(0, 8)}... even though validation succeeded`);
+                    console.error(`❌ Failed to create/retrieve license record for ${license_key.substring(0, 8)}... even though validation succeeded and upsert returned success`);
+                    console.error(`   This might indicate a database connection or table structure issue.`);
                     return res.status(500).json({ 
                         error: 'Internal server error: Failed to create license record. Please try again.' 
                     });
