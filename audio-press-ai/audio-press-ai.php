@@ -1,14 +1,16 @@
 <?php
 /**
  * Plugin Name: Audio-Press AI
- * Plugin URI: https://example.com/audio-press-ai
- * Description: Convert WordPress posts to high-quality audio using AI. Premium subscription via Freemius.
+ * Plugin URI: https://wordpress.org/plugins/audio-press-ai
+ * Description: Convert WordPress posts to high-quality audio using AI. Software as a Service solution with remote audio generation.
  * Version: 1.0.0
- * Author: Your Name
- * Author URI: https://example.com
+ * Author: (your-wordpress.org-username)
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: audio-press-ai
+ * Requires at least: 5.8
+ * Requires PHP: 7.4
+ * Tested up to: 6.7
  */
 
 // Exit if accessed directly

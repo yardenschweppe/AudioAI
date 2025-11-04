@@ -77,6 +77,68 @@ class Audio_Press_AI {
     }
     
     /**
+     * Get trial_post_id from server for free/trial users
+     */
+    private function get_trial_post_id() {
+        $license_key = $this->get_license_key();
+        if (!$license_key) {
+            return null;
+        }
+        
+        // Check user meta first (cached)
+        $user_id = get_current_user_id();
+        $cached_trial_post_id = get_user_meta($user_id, '_audio_press_ai_trial_post_id', true);
+        $cache_timestamp = get_user_meta($user_id, '_audio_press_ai_trial_post_id_time', true);
+        
+        // Cache for 5 minutes to avoid too many API calls
+        if ($cached_trial_post_id && $cache_timestamp && (time() - $cache_timestamp) < 300) {
+            return $cached_trial_post_id ? absint($cached_trial_post_id) : null;
+        }
+        
+        // Get from server
+        $api_server_url = AUDIO_PRESS_AI_API_URL;
+        $api_server_url = esc_url_raw(rtrim($api_server_url, '/'));
+        
+        if (empty($api_server_url) || !filter_var($api_server_url, FILTER_VALIDATE_URL)) {
+            return null;
+        }
+        
+        $url = $api_server_url . '/usage';
+        
+        $response = wp_remote_request($url, array(
+            'method' => 'POST',
+            'headers' => array('Content-Type' => 'application/json'),
+            'body' => json_encode(array('license_key' => $license_key), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'timeout' => 10,
+            'sslverify' => true,
+        ));
+        
+        if (is_wp_error($response)) {
+            return null;
+        }
+        
+        $response_body = wp_remote_retrieve_body($response);
+        if (empty($response_body)) {
+            return null;
+        }
+        
+        $response_data = json_decode($response_body, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            return null;
+        }
+        
+        $trial_post_id = isset($response_data['trial_post_id']) ? $response_data['trial_post_id'] : null;
+        
+        // Cache in user meta
+        if ($user_id) {
+            update_user_meta($user_id, '_audio_press_ai_trial_post_id', $trial_post_id ? absint($trial_post_id) : '');
+            update_user_meta($user_id, '_audio_press_ai_trial_post_id_time', time());
+        }
+        
+        return $trial_post_id ? absint($trial_post_id) : null;
+    }
+    
+    /**
      * Get Freemius license key
      */
     private function get_license_key() {
@@ -777,19 +839,44 @@ class Audio_Press_AI {
         
         $is_pro = $this->is_pro_user();
         $dev_mode = defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true;
+        
+        // For free/trial users, check if this post is allowed
+        $trial_post_id = null;
+        $is_allowed_post = true;
+        if (!$is_pro && !$dev_mode && $post_id > 0) {
+            $trial_post_id = $this->get_trial_post_id();
+            // If trial_post_id exists, only allow this specific post
+            // If trial_post_id is null, allow first post selection
+            if ($trial_post_id !== null && $trial_post_id !== $post_id) {
+                $is_allowed_post = false;
+            }
+        }
+        
         ?>
         <div id="audio-press-ai-container" data-post-id="<?php echo esc_attr($post_id); ?>">
-            <?php if (!$is_pro && !$dev_mode): ?>
+            <?php if (!$is_pro && !$dev_mode && !$is_allowed_post): ?>
                 <div style="padding: 10px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; margin-bottom: 10px;">
                     <p style="margin: 0; font-size: 12px;">
-                        <strong><?php _e('Upgrade Required', 'audio-press-ai'); ?></strong><br>
-                        <?php _e('You need a Pro license to generate audio.', 'audio-press-ai'); ?>
+                        <strong><?php _e('Free Plan Limit', 'audio-press-ai'); ?></strong><br>
+                        <?php 
+                        printf(
+                            __('You can only generate audio for one post in the free plan. Your allowed post is #%d. Please upgrade to Pro to generate audio for all posts.', 'audio-press-ai'),
+                            $trial_post_id
+                        );
+                        ?>
                     </p>
                     <?php if (function_exists('apai_fs')): ?>
                         <a href="<?php echo esc_url(apai_fs()->get_upgrade_url()); ?>" class="button button-primary" style="margin-top: 8px; width: 100%;">
                             <?php _e('Upgrade to Pro', 'audio-press-ai'); ?>
                         </a>
                     <?php endif; ?>
+                </div>
+            <?php elseif (!$is_pro && !$dev_mode): ?>
+                <div style="padding: 10px; background: #e7f3ff; border: 1px solid #0073aa; border-radius: 4px; margin-bottom: 10px;">
+                    <p style="margin: 0; font-size: 12px;">
+                        <strong><?php _e('Free Plan', 'audio-press-ai'); ?></strong><br>
+                        <?php _e('You can generate audio for one post in the free plan. After generating audio for this post, you can regenerate it unlimited times, but you won\'t be able to generate audio for other posts. Upgrade to Pro for unlimited posts.', 'audio-press-ai'); ?>
+                    </p>
                 </div>
             <?php elseif ($dev_mode): ?>
                 <div style="padding: 8px; background: #e7f3ff; border: 1px solid #0073aa; border-radius: 4px; margin-bottom: 10px;">
@@ -862,8 +949,7 @@ class Audio_Press_AI {
                     <div style="display: flex; gap: 5px;">
                         <button type="button" 
                                 class="button button-secondary" 
-                                id="audio-press-ai-regenerate"
-                                <?php if (!$is_pro && !$dev_mode) echo 'disabled'; ?>>
+                                id="audio-press-ai-regenerate">
                             <?php _e('Regenerate Audio', 'audio-press-ai'); ?>
                         </button>
                         <button type="button" 
@@ -931,7 +1017,7 @@ class Audio_Press_AI {
                         class="button button-primary button-large" 
                         id="audio-press-ai-generate" 
                         style="width: 100%;"
-                        <?php if (!$is_pro && !(defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true)) echo 'disabled'; ?>>
+                        <?php if ((!$is_pro && !$dev_mode && !$is_allowed_post) || (!$is_pro && !$dev_mode && $post_id <= 0)) echo 'disabled'; ?>>
                     <?php _e('Generate Audio Version (AI)', 'audio-press-ai'); ?>
                 </button>
             <?php endif; ?>
@@ -990,22 +1076,36 @@ class Audio_Press_AI {
             wp_send_json_error(array('message' => __('Post not found', 'audio-press-ai')));
         }
         
-        // Check Pro license (unless in dev mode)
-        if (!(defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true)) {
-            if (!$this->is_pro_user()) {
-                wp_send_json_error(array('message' => __('Pro license required. Please upgrade.', 'audio-press-ai')));
-            }
-        }
-        
+        // Get license key first - we'll let the server validate it
+        // The server is the authority on what plans are allowed (trial, free with limits, pro, etc.)
         $license_key = $this->get_license_key();
         if (!$license_key) {
             // In dev mode, use TEST key if get_license_key fails
             if (defined('AUDIO_PRESS_AI_DEV_MODE') && AUDIO_PRESS_AI_DEV_MODE === true) {
                 $license_key = 'TEST';
             } else {
-                wp_send_json_error(array('message' => __('License key not found', 'audio-press-ai')));
+                // Check if user is connected to Freemius (has any license/subscription)
+                if (!function_exists('apai_fs')) {
+                    wp_send_json_error(array('message' => __('Please connect to the audio generation service first.', 'audio-press-ai')));
+                }
+                
+                $fs = apai_fs();
+                // Check if user is connected (has opted in) even if not paying
+                if (is_callable(array($fs, 'is_registered')) && !$fs->is_registered()) {
+                    wp_send_json_error(array('message' => __('Please connect to the audio generation service first.', 'audio-press-ai')));
+                }
+                
+                // If connected but no license key, they might be on free plan
+                // Let the server handle validation - it will reject if needed
+                wp_send_json_error(array('message' => __('License key not found. Please check your subscription status.', 'audio-press-ai')));
             }
         }
+        
+        // Note: We don't check is_pro_user() here because:
+        // 1. Trial plans should be allowed (server will validate)
+        // 2. Free plans should be allowed if they have limits (server will validate)
+        // 3. The server is the authority on what's allowed based on plan limits
+        // We only check that a license key exists - the server validates the rest
         
         // Get and validate options
         $voice = get_option('audio_press_ai_voice', 'nova');
@@ -1401,12 +1501,23 @@ class Audio_Press_AI {
             }
         }
         
+        // Update cached trial_post_id if returned from server
+        if (isset($response_data['usage']['trial_post_id'])) {
+            $user_id = get_current_user_id();
+            if ($user_id) {
+                $trial_post_id = $response_data['usage']['trial_post_id'];
+                update_user_meta($user_id, '_audio_press_ai_trial_post_id', $trial_post_id ? absint($trial_post_id) : '');
+                update_user_meta($user_id, '_audio_press_ai_trial_post_id_time', time());
+            }
+        }
+        
         wp_send_json_success(array(
             'audio_url' => wp_get_attachment_url($attachment_id),
             'message' => __('Audio generated successfully!', 'audio-press-ai'),
             'usage' => isset($response_data['usage']) ? $response_data['usage'] : null,
             'generate_count' => isset($response_data['usage']['generate_count']) ? $response_data['usage']['generate_count'] : null,
-            'language' => $language ? $language : (isset($detect_data['detected']) ? $detect_data['detected'] : null)
+            'language' => $language ? $language : (isset($detect_data['detected']) ? $detect_data['detected'] : null),
+            'trial_post_id' => isset($response_data['usage']['trial_post_id']) ? $response_data['usage']['trial_post_id'] : null
         ));
     }
     
