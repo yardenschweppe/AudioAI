@@ -8,6 +8,7 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
+    "@freemius/checkout": "^1.4.0",
     "@freemius/sdk": "^0.1.0",
     "axios": "^1.6.0",
     "cors": "^2.8.5",
@@ -15,7 +16,8 @@
     "express": "^4.18.2",
     "franc": "^6.2.0",
     "mysql2": "^3.6.5",
-    "oauth": "^0.10.2"
+    "oauth": "^0.10.2",
+    "zod": "^4.1.12"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

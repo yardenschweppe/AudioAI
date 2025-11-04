@@ -688,11 +688,22 @@ class Audio_Press_AI {
             wp_send_json_error(array('message' => __('Invalid response from server: missing audio data or URL', 'audio-press-ai')));
         }
         
+        // Debug: Log file size
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('Audio-Press AI: Received audio data size: ' . strlen($file_contents) . ' bytes');
+        }
+        
         // Save to WordPress media library
         $upload = wp_upload_bits($filename, null, $file_contents);
         
         if ($upload['error']) {
             wp_send_json_error(array('message' => __('Failed to save audio file', 'audio-press-ai')));
+        }
+        
+        // Debug: Log saved file size
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            $saved_size = file_exists($upload['file']) ? filesize($upload['file']) : 0;
+            error_log('Audio-Press AI: Saved file size: ' . $saved_size . ' bytes, path: ' . $upload['file']);
         }
         
         // Get mime type from WordPress based on file extension
@@ -726,6 +737,12 @@ class Audio_Press_AI {
         
         require_once(ABSPATH . 'wp-admin/includes/image.php');
         $attach_data = wp_generate_attachment_metadata($attachment_id, $upload['file']);
+        
+        // Debug: Log metadata
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('Audio-Press AI: Generated metadata: ' . print_r($attach_data, true));
+        }
+        
         wp_update_attachment_metadata($attachment_id, $attach_data);
         
         // Save attachment ID to post meta

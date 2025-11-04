@@ -1621,12 +1621,21 @@ app.post('/generate', async (req, res) => {
         
         // Step 2.5: If DB is configured, use DB-first enforcement (licenses/usage_month)
         if (dbPool && licRow) {
+            // Reload licRow to ensure we have the latest plan_code from Freemius
+            // This is critical for Premium users who just upgraded
+            const [refreshedRows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
+            licRow = refreshedRows[0] || licRow;
+            
             const planCode = licRow.plan_code || 'trial';
             console.log(`📋 License plan_code from DB: ${planCode}, status: ${licRow.status}`);
             const conn = await dbPool.getConnection();
             try {
                 await conn.beginTransaction();
-                if (planCode === 'trial') {
+                // Only enforce trial restrictions if user is actually on trial plan
+                // Check plan_code only (status can be 'active' or 'trialing' for trial users)
+                // For Premium users, plan_code will be 'premium', 'professional', etc.
+                const isActuallyTrial = planCode === 'trial';
+                if (isActuallyTrial) {
                     if (!licRow.trial_post_id) {
                         await conn.query(`UPDATE \`${DB_LICENSES_TABLE}\` SET trial_post_id=? WHERE license_key=?`, [effectivePostId, license_key]);
                     } else if (String(licRow.trial_post_id) !== String(effectivePostId)) {
@@ -1671,9 +1680,14 @@ app.post('/generate', async (req, res) => {
         const usage = await getUsage(license_key, plan);
         
         // Determine if user has paid plan
-        const hasPaid = plan !== 'trial' && !validation.license?.test_mode;
+        // Check both plan name AND license status to avoid restricting Premium users
+        const hasPaid = (plan !== 'trial' && !validation.license?.test_mode) || 
+                       (licRow && licRow.status === 'active' && licRow.plan_code !== 'trial');
+        
+        console.log(`💳 User payment status: hasPaid=${hasPaid}, plan=${plan}, status=${licRow?.status}, plan_code=${licRow?.plan_code}`);
         
         // Trial logic (אם אין תכנית בתשלום)
+        // Only apply trial restrictions if user is actually on trial plan
         if (!hasPaid) {
             if (!usage.trial_post_id) {
                 usage.trial_post_id = String(effectivePostId);
@@ -1725,15 +1739,71 @@ app.post('/generate', async (req, res) => {
             
             await schedule(job);
             
-            // Read generated audio
-            const audioBuffer = fs.readFileSync(tempFilePath);
-            const fileSize = fs.statSync(tempFilePath).size;
+            // Convert WAV to MP3 using ffmpeg for better WordPress compatibility
+            const mp3FilePath = tempFilePath.replace('.wav', '.mp3');
+            console.log(`🔄 Converting WAV to MP3 for WordPress compatibility...`);
             
-            console.log(`📊 Generated audio file: size=${fileSize} bytes (${(fileSize / 1024).toFixed(2)} KB)`);
+            const ffmpegResult = spawnSync('ffmpeg', [
+                '-y', // Overwrite output file
+                '-i', tempFilePath, // Input WAV file
+                '-codec:a', 'libmp3lame', // Use MP3 codec
+                '-qscale:a', '2', // High quality (VBR, ~190 kbps)
+                mp3FilePath // Output MP3 file
+            ], { stdio: 'pipe' });
             
-            // Check if file is suspiciously small (less than 1KB suggests only partial generation)
+            if (ffmpegResult.status !== 0) {
+                const ffmpegError = ffmpegResult.stderr ? ffmpegResult.stderr.toString() : '';
+                const ffmpegOut = ffmpegResult.stdout ? ffmpegResult.stdout.toString() : '';
+                console.error(`❌ FFmpeg conversion failed with exit code ${ffmpegResult.status}`);
+                if (ffmpegError) console.error(`   stderr: ${ffmpegError}`);
+                if (ffmpegOut) console.error(`   stdout: ${ffmpegOut}`);
+                // Fallback to WAV if conversion fails
+                const audioBuffer = fs.readFileSync(tempFilePath);
+                const fileSize = fs.statSync(tempFilePath).size;
+                
+                console.log(`⚠️  Using WAV fallback: size=${fileSize} bytes (${(fileSize / 1024).toFixed(2)} KB)`);
+                
+                if (!audioBuffer || audioBuffer.length === 0) {
+                    return res.status(500).json({
+                        error: 'Generated audio is empty'
+                    });
+                }
+                
+                // Continue with WAV file
+                const audioBase64 = audioBuffer.toString('base64');
+                
+                res.json({
+                    ok: true,
+                    language: chosenLanguage,
+                    audio_data: audioBase64,
+                    audio_mime: 'audio/wav',
+                    filename: `audio_${Date.now()}.wav`,
+                    usage: dbPool ? undefined : {
+                        plan: resolvePlan(validation),
+                        used_posts: usage.posts_used.size,
+                        limit_posts: getPlanLimit(resolvePlan(validation)),
+                        remaining_posts: isFinite(getPlanLimit(resolvePlan(validation))) ? Math.max(0, getPlanLimit(resolvePlan(validation)) - usage.posts_used.size) : Infinity,
+                        generate_count: usage.generate_count
+                    }
+                });
+                
+                // Cleanup temp files
+                if (fs.existsSync(tempFilePath)) fs.unlink(tempFilePath, () => {});
+                if (fs.existsSync(mp3FilePath)) fs.unlink(mp3FilePath, () => {});
+                
+                return;
+            }
+            
+            // Read MP3 file
+            const audioBuffer = fs.readFileSync(mp3FilePath);
+            const fileSize = fs.statSync(mp3FilePath).size;
+            const wavSize = fs.statSync(tempFilePath).size;
+            
+            console.log(`✅ MP3 conversion successful: WAV=${(wavSize / 1024).toFixed(2)} KB → MP3=${(fileSize / 1024).toFixed(2)} KB`);
+            
+            // Check if file is suspiciously small
             if (fileSize < 1024) {
-                console.warn(`⚠️  WARNING: Generated audio file is very small (${fileSize} bytes). This might indicate Piper only processed part of the text.`);
+                console.warn(`⚠️  WARNING: Generated audio file is very small (${fileSize} bytes).`);
             }
             
             if (!audioBuffer || audioBuffer.length === 0) {
@@ -1742,6 +1812,9 @@ app.post('/generate', async (req, res) => {
                     error: 'Generated audio is empty'
                 });
             }
+            
+            // Cleanup WAV file (keep MP3 for now, will cleanup in finally block)
+            if (fs.existsSync(tempFilePath)) fs.unlink(tempFilePath, () => {});
             
             // Step 6: Update usage counters (DB-first)
             const textLen = textToProcess.length;
@@ -1757,15 +1830,15 @@ app.post('/generate', async (req, res) => {
                 await updateUsage(license_key, usage);
             }
             
-            // Step 7: Return success response with audio data
+            // Step 7: Return success response with audio data (MP3)
             const audioBase64 = audioBuffer.toString('base64');
             
             res.json({
                 ok: true,
                 language: chosenLanguage,
                 audio_data: audioBase64,
-                audio_mime: 'audio/wav',
-                filename: `audio_${Date.now()}.wav`,
+                audio_mime: 'audio/mpeg',
+                filename: `audio_${Date.now()}.mp3`,
                 usage: dbPool ? undefined : {
                     plan: resolvePlan(validation),
                     used_posts: usage.posts_used.size,
@@ -1789,9 +1862,13 @@ app.post('/generate', async (req, res) => {
                 error: audioError.message || 'Failed to generate audio'
             });
         } finally {
-            // Cleanup temp file
+            // Cleanup temp files (both WAV and MP3)
             if (fs.existsSync(tempFilePath)) {
                 fs.unlink(tempFilePath, () => {});
+            }
+            const mp3FilePath = tempFilePath.replace('.wav', '.mp3');
+            if (fs.existsSync(mp3FilePath)) {
+                fs.unlink(mp3FilePath, () => {});
             }
         }
         
