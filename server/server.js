@@ -1678,18 +1678,25 @@ app.post('/generate', async (req, res) => {
                     if (!licenseExists && !usageExists) {
                         console.log(`📝 New user detected: ${license_key.substring(0, 8)}... - Adding to licenses and ${DB_TABLE_NAME} tables`);
                         
-                        // Add to licenses table with default values
-                        dbPool.query(
+                        // Add to licenses table with default values - WAIT for completion
+                        return dbPool.query(
                             `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, trial_post_id, validated_at) VALUES (?, ?, ?, ?, ?, NOW())`,
                             [license_key, 'trial', 'trialing', 'monthly', String(effectivePostId)]
-                        ).catch(err => console.error('Error inserting into licenses:', err.message));
-                        
-                        // Add to audio_usage table with current month and post_id
-                        const month = new Date().toISOString().slice(0, 7);
-                        return dbPool.query(
-                            `INSERT INTO \`${DB_TABLE_NAME}\` (license_key, month, posts_used, posts_used_count) VALUES (?, ?, JSON_ARRAY(?), ?)`,
-                            [license_key, month, String(effectivePostId), 1]
-                        );
+                        ).then(() => {
+                            console.log(`✅ Added to licenses table: ${license_key.substring(0, 8)}...`);
+                            // Add to audio_usage table with current month and post_id - WAIT for completion
+                            const month = new Date().toISOString().slice(0, 7);
+                            return dbPool.query(
+                                `INSERT INTO \`${DB_TABLE_NAME}\` (license_key, month, posts_used, posts_used_count) VALUES (?, ?, JSON_ARRAY(?), ?)`,
+                                [license_key, month, String(effectivePostId), 1]
+                            );
+                        }).then(() => {
+                            console.log(`✅ Added to ${DB_TABLE_NAME} table: ${license_key.substring(0, 8)}...`);
+                            return Promise.resolve();
+                        }).catch(err => {
+                            console.error('Error inserting new user:', err.message);
+                            throw err;
+                        });
                     } else if (licenseExists && usageExists) {
                         // Step 4: Both exist - check if post_id matches
                         let postIdMatches = false;
@@ -1804,12 +1811,19 @@ app.post('/generate', async (req, res) => {
             if (dbPool) {
                 if (isNewWordPressUser) {
                     // For new WordPress users, get from DB (should have been added in previous step)
-                    // If not found, try to add it (shouldn't happen, but just in case)
-                    const [rows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
+                    // Wait a bit if not found immediately (race condition protection)
+                    let [rows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
                     licRow = rows[0];
                     if (!licRow) {
-                        // User not found - add them now (shouldn't happen but handle gracefully)
-                        console.log(`⚠️  New WordPress user not found in DB - adding now: ${license_key.substring(0, 8)}...`);
+                        // User not found - wait 100ms and try again (race condition protection)
+                        console.log(`⚠️  New WordPress user not found in DB - waiting and retrying: ${license_key.substring(0, 8)}...`);
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        [rows] = await dbPool.query(`SELECT * FROM \`${DB_LICENSES_TABLE}\` WHERE license_key=?`, [license_key]);
+                        licRow = rows[0];
+                    }
+                    if (!licRow) {
+                        // Still not found - add them now (shouldn't happen but handle gracefully)
+                        console.log(`⚠️  New WordPress user still not found - adding now: ${license_key.substring(0, 8)}...`);
                         await dbPool.query(
                             `INSERT INTO \`${DB_LICENSES_TABLE}\` (license_key, plan_code, status, period, trial_post_id, validated_at) VALUES (?, ?, ?, ?, ?, NOW())`,
                             [license_key, 'trial', 'trialing', 'monthly', String(effectivePostId || '')]
@@ -2643,4 +2657,5 @@ app.listen(PORT, () => {
     console.log('   GET  /admin/database-status - Check database connection');
     console.log('');
 });
+
 
